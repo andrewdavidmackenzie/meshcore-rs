@@ -3,10 +3,10 @@
 //! This library provides an async interface for communicating with MeshCore devices
 //! over serial, TCP, or BLE connections.
 //!
-//! # Example
+//! # Serial Example
 //!
 //! ```no_run
-//! use meshcore::{MeshCore, EventType};
+//! use meshcore::MeshCore;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), meshcore::Error> {
@@ -14,11 +14,39 @@
 //!     let meshcore = MeshCore::serial("/dev/ttyUSB0", 115200).await?;
 //!
 //!     // Get device info
-//!     let info = meshcore.commands().send_appstart().await?;
-//!     println!("Connected to: {:?}", info);
+//!     let info = meshcore.commands().lock().await.send_appstart().await?;
+//!     println!("Connected to: {}", info.name);
 //!
 //!     // Get contacts
-//!     let contacts = meshcore.commands().get_contacts(0).await?;
+//!     let contacts = meshcore.commands().lock().await.get_contacts(0).await?;
+//!     println!("Found {} contacts", contacts.len());
+//!
+//!     meshcore.disconnect().await?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! # BLE Example
+//!
+//! Requires the `ble` feature.
+//!
+//! ```no_run
+//! use meshcore::MeshCore;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), meshcore::Error> {
+//!     // Connect via BLE (scans for any MeshCore device)
+//!     let meshcore = MeshCore::ble(None).await?;
+//!
+//!     // Or connect to a specific device by name
+//!     // let meshcore = MeshCore::ble(Some("MyDevice")).await?;
+//!
+//!     // Get device info
+//!     let info = meshcore.commands().lock().await.send_appstart().await?;
+//!     println!("Connected to: {}", info.name);
+//!
+//!     // Get contacts
+//!     let contacts = meshcore.commands().lock().await.get_contacts(0).await?;
 //!     println!("Found {} contacts", contacts.len());
 //!
 //!     meshcore.disconnect().await?;

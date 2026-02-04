@@ -124,6 +124,7 @@ pub struct CommandHandler {
     /// Default timeout for commands
     default_timeout: Duration,
     /// Contact lookup function
+    #[allow(clippy::type_complexity)]
     contact_getter: Option<Box<dyn Fn(&[u8; 6]) -> Option<Contact> + Send + Sync>>,
 }
 
