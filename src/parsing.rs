@@ -96,7 +96,7 @@ pub fn parse_contact(data: &[u8]) -> Result<Contact> {
         .copied()
         .collect();
 
-    // Name is 32 bytes at offset 99
+    // The Name is 32 bytes at offset 99
     let adv_name = read_string(data, 99, 32);
 
     // Timestamps and coordinates
@@ -104,8 +104,8 @@ pub fn parse_contact(data: &[u8]) -> Result<Contact> {
     let adv_lat = read_i32_le(data, 135)?;
     let adv_lon = read_i32_le(data, 139)?;
 
-    // Lastmod is optional (4 bytes at offset 143)
-    let lastmod = if data.len() >= 149 {
+    // The last modification timestamp is optional (4 bytes at offset 143)
+    let last_modification_timestamp = if data.len() >= 149 {
         read_u32_le(data, 143).unwrap_or(0)
     } else {
         0
@@ -121,11 +121,11 @@ pub fn parse_contact(data: &[u8]) -> Result<Contact> {
         last_advert,
         adv_lat,
         adv_lon,
-        last_modification_timestamp: lastmod,
+        last_modification_timestamp,
     })
 }
 
-/// Parse self info from raw bytes (109+ bytes)
+/// Parse self-info from raw bytes (109+ bytes)
 pub fn parse_self_info(data: &[u8]) -> Result<SelfInfo> {
     if data.len() < 52 {
         return Err(Error::protocol(format!(

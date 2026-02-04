@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt::init();
 
-    // Get serial port from command line or use default
+    // Get serial port from the command line or use default
     let port = env::args().nth(1).unwrap_or_else(|| "/dev/ttyUSB0".to_string());
 
     println!("Connecting to MeshCore device on {}...", port);

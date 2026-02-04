@@ -162,7 +162,7 @@ impl CommandHandler {
             .await
     }
 
-    /// Send raw data and wait for a response with custom timeout
+    /// Send raw data and wait for a response with the custom timeout
     pub async fn send_with_timeout(
         &self,
         data: &[u8],
@@ -291,7 +291,7 @@ impl CommandHandler {
         Ok(())
     }
 
-    /// Set device name
+    /// Set the device name
     pub async fn set_name(&self, name: &str) -> Result<()> {
         let mut data = vec![0x08];
         data.extend_from_slice(name.as_bytes());
@@ -408,20 +408,20 @@ impl CommandHandler {
 
     // ========== Contact Commands ==========
 
-    /// Get contacts list
-    pub async fn get_contacts(&self, lastmod: u32) -> Result<Vec<Contact>> {
-        self.get_contacts_with_timeout(lastmod, self.default_timeout)
+    /// Get the contact list
+    pub async fn get_contacts(&self, last_modification_timestamp: u32) -> Result<Vec<Contact>> {
+        self.get_contacts_with_timeout(last_modification_timestamp, self.default_timeout)
             .await
     }
 
-    /// Get contacts list with custom timeout
+    /// Get the contact list with a custom timeout
     pub async fn get_contacts_with_timeout(
         &self,
-        lastmod: u32,
+        last_modification_stimestamp: u32,
         timeout: Duration,
     ) -> Result<Vec<Contact>> {
         let mut data = vec![0x04];
-        data.extend_from_slice(&lastmod.to_le_bytes());
+        data.extend_from_slice(&last_modification_stimestamp.to_le_bytes());
         let event = self
             .send_with_timeout(&data, EventType::Contacts, timeout)
             .await?;
@@ -653,7 +653,7 @@ impl CommandHandler {
             .await
     }
 
-    /// Request status with custom timeout
+    /// Request status with the custom timeout
     pub async fn req_status_with_timeout(
         &self,
         dest: impl Into<Destination>,
@@ -680,7 +680,7 @@ impl CommandHandler {
             .await
     }
 
-    /// Request telemetry with custom timeout
+    /// Request telemetry with the custom timeout
     pub async fn req_telemetry_with_timeout(
         &self,
         dest: impl Into<Destination>,
@@ -706,7 +706,7 @@ impl CommandHandler {
         self.req_acl_with_timeout(dest, self.default_timeout).await
     }
 
-    /// Request ACL with custom timeout
+    /// Request ACL with the custom timeout
     pub async fn req_acl_with_timeout(
         &self,
         dest: impl Into<Destination>,
@@ -727,19 +727,19 @@ impl CommandHandler {
         }
     }
 
-    /// Request neighbours from a contact
-    pub async fn req_neighbours(
+    /// Request neighbors from a contact
+    pub async fn req_neighbors(
         &self,
         dest: impl Into<Destination>,
         count: u16,
         offset: u16,
     ) -> Result<NeighboursData> {
-        self.req_neighbours_with_timeout(dest, count, offset, self.default_timeout)
+        self.req_neighbors_with_timeout(dest, count, offset, self.default_timeout)
             .await
     }
 
-    /// Request neighbours with custom timeout
-    pub async fn req_neighbours_with_timeout(
+    /// Request neighbors with custom timeout
+    pub async fn req_neighbors_with_timeout(
         &self,
         dest: impl Into<Destination>,
         count: u16,
@@ -807,7 +807,7 @@ impl CommandHandler {
         Ok(())
     }
 
-    /// Finish signing and get signature
+    /// Finish signing and get the signature
     pub async fn sign_finish(&self, timeout: Duration) -> Result<Vec<u8>> {
         let data = [0x01, 0x0E];
         let event = self

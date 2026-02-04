@@ -32,10 +32,10 @@ pub struct MessageReader {
     dispatcher: Arc<EventDispatcher>,
     /// Pending binary requests
     pending_requests: Arc<RwLock<HashMap<String, BinaryRequest>>>,
-    /// Contacts being built during multi-packet contact list
+    /// Contacts being built during the multi-packet contact list
     pending_contacts: Arc<RwLock<Vec<Contact>>>,
-    /// Current contact list lastmod value
-    contacts_lastmod: Arc<RwLock<u32>>,
+    /// Current contact list last_modification_timestamp value
+    contacts_last_modification_timestamp: Arc<RwLock<u32>>,
 }
 
 impl MessageReader {
@@ -45,7 +45,7 @@ impl MessageReader {
             dispatcher,
             pending_requests: Arc::new(RwLock::new(HashMap::new())),
             pending_contacts: Arc::new(RwLock::new(Vec::new())),
-            contacts_lastmod: Arc::new(RwLock::new(0)),
+            contacts_last_modification_timestamp: Arc::new(RwLock::new(0)),
         }
     }
 
@@ -114,7 +114,7 @@ impl MessageReader {
             PacketType::Contact | PacketType::PushCodeNewAdvert => {
                 if let Ok(contact) = parse_contact(payload) {
                     if packet_type == PacketType::PushCodeNewAdvert {
-                        // Emit as new contact event
+                        // Emit as a new contact event
                         let event = Event::new(EventType::NewContact, EventPayload::Contact(contact));
                         self.dispatcher.emit(event).await;
                     } else {
@@ -125,18 +125,18 @@ impl MessageReader {
             }
 
             PacketType::ContactEnd => {
-                // Get lastmod if present
-                let lastmod = if payload.len() >= 4 {
+                // Get last_modification_timestamp if present
+                let last_modification_timestamp = if payload.len() >= 4 {
                     read_u32_le(payload, 0).unwrap_or(0)
                 } else {
                     0
                 };
-                *self.contacts_lastmod.write().await = lastmod;
+                *self.contacts_last_modification_timestamp.write().await = last_modification_timestamp;
 
                 // Emit contacts event
                 let contacts = std::mem::take(&mut *self.pending_contacts.write().await);
                 let event = Event::new(EventType::Contacts, EventPayload::Contacts(contacts))
-                    .with_attribute("lastmod", lastmod.to_string());
+                    .with_attribute("lastmod", last_modification_timestamp.to_string());
                 self.dispatcher.emit(event).await;
             }
 
@@ -398,7 +398,7 @@ impl MessageReader {
 
             PacketType::StatusResponse => {
                 if payload.len() >= 58 {
-                    // First 6 bytes are the sender prefix
+                    // The first 6 bytes are the sender prefix
                     let sender_prefix: [u8; 6] = read_bytes(payload, 0).unwrap_or([0; 6]);
                     if let Ok(status) = parse_status(&payload[6..], sender_prefix) {
                         let tag_hex = hex_encode(&sender_prefix);
@@ -410,7 +410,7 @@ impl MessageReader {
             }
 
             PacketType::TelemetryResponse => {
-                // First bytes are tag, rest is LPP data
+                // The first bytes are tag, the rest is LPP data
                 if payload.len() >= 4 {
                     let tag: [u8; 4] = read_bytes(payload, 0).unwrap_or([0; 4]);
                     let telemetry = payload[4..].to_vec();
@@ -431,7 +431,7 @@ impl MessageReader {
                     let request = self.pending_requests.write().await.remove(&tag_hex);
 
                     if let Some(req) = request {
-                        // Emit typed event based on request type
+                        // Emit typed event based on the request type
                         let event = match req.request_type {
                             BinaryReqType::Status => {
                                 if let Ok(status) = parse_status(&data, [0; 6]) {
