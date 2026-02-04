@@ -19,12 +19,13 @@ futures = "0.3"
 
 # BLE support (optional)
 btleplug = { version = "0.11", optional = true }
+uuid = { version = "1", optional = true }
 
 [features]
-default = ["serial", "tcp"]
+default = ["serial", "tcp", "ble"]
 serial = []
 tcp = []
-ble = ["btleplug"]
+ble = ["btleplug", "uuid"]
 
 [dev-dependencies]
 tokio-test = "0.4"
