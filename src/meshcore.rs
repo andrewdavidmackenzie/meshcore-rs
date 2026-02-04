@@ -13,7 +13,6 @@ use crate::Error;
 use crate::Result;
 
 /// MeshCore client for communicating with MeshCore devices
-#[allow(dead_code)]
 pub struct MeshCore {
     /// Event dispatcher
     dispatcher: Arc<EventDispatcher>,
@@ -31,23 +30,19 @@ pub struct MeshCore {
     contacts_dirty: Arc<RwLock<bool>>,
     /// Connection state
     connected: Arc<RwLock<bool>>,
-    /// Sender for outgoing data
-    sender: mpsc::Sender<Vec<u8>>,
     /// Auto message fetching subscription
     auto_fetch_sub: Arc<Mutex<Option<Subscription>>>,
-    /// Default timeout
-    default_timeout: Duration,
     /// Background tasks
     tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 impl MeshCore {
     /// Create a new MeshCore client with a custom connection
-    fn new_with_sender(sender: mpsc::Sender<Vec<u8>>, default_timeout: Duration) -> Self {
+    fn new_with_sender(sender: mpsc::Sender<Vec<u8>>) -> Self {
         let dispatcher = Arc::new(EventDispatcher::new());
         let reader = Arc::new(MessageReader::new(dispatcher.clone()));
 
-        let commands = CommandHandler::new(sender.clone(), dispatcher.clone(), reader.clone());
+        let commands = CommandHandler::new(sender, dispatcher.clone(), reader.clone());
 
         Self {
             dispatcher,
@@ -58,9 +53,7 @@ impl MeshCore {
             device_time: Arc::new(RwLock::new(None)),
             contacts_dirty: Arc::new(RwLock::new(true)),
             connected: Arc::new(RwLock::new(false)),
-            sender,
             auto_fetch_sub: Arc::new(Mutex::new(None)),
-            default_timeout,
             tasks: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -73,7 +66,7 @@ impl MeshCore {
         use tokio_serial::SerialPortBuilderExt;
 
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
-        let meshcore = Self::new_with_sender(tx, Duration::from_secs(5));
+        let meshcore = Self::new_with_sender(tx);
 
         // Open serial port
         let port = tokio_serial::new(port, baud_rate)
@@ -177,15 +170,12 @@ impl MeshCore {
 
         // MeshCore BLE service and characteristic UUIDs
         // These are the standard UUIDs used by MeshCore devices
-        const MESHCORE_SERVICE_UUID: Uuid =
-            Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
-        const MESHCORE_TX_CHAR_UUID: Uuid =
-            Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
-        const MESHCORE_RX_CHAR_UUID: Uuid =
-            Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
+        const MESHCORE_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
+        const MESHCORE_TX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
+        const MESHCORE_RX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
 
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
-        let meshcore = Self::new_with_sender(tx, Duration::from_secs(10));
+        let meshcore = Self::new_with_sender(tx);
 
         // Get the Bluetooth adapter
         let manager = Manager::new()
@@ -240,10 +230,7 @@ impl MeshCore {
                                 };
 
                                 if is_target {
-                                    tracing::info!(
-                                        "Found MeshCore device: {:?}",
-                                        props.local_name
-                                    );
+                                    tracing::info!("Found MeshCore device: {:?}", props.local_name);
                                     return Some(peripheral);
                                 }
                             }
@@ -260,16 +247,46 @@ impl MeshCore {
         // Stop scanning
         let _ = adapter.stop_scan().await;
 
-        let peripheral = target_peripheral
-            .ok_or_else(|| Error::connection("MeshCore device not found"))?;
+        let peripheral =
+            target_peripheral.ok_or_else(|| Error::connection("MeshCore device not found"))?;
 
-        // Connect to the device
-        peripheral
-            .connect()
-            .await
-            .map_err(|e| Error::connection(format!("Failed to connect to device: {}", e)))?;
+        // Check if already connected, disconnect first if so
+        if peripheral.is_connected().await.unwrap_or(false) {
+            tracing::info!("Device already connected, disconnecting first...");
+            let _ = peripheral.disconnect().await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
 
-        tracing::info!("Connected to MeshCore device");
+        // Connect to the device with retry
+        let mut connect_attempts = 0;
+        const MAX_CONNECT_ATTEMPTS: u32 = 3;
+
+        loop {
+            connect_attempts += 1;
+            tracing::info!(
+                "Connecting to device (attempt {}/{})",
+                connect_attempts,
+                MAX_CONNECT_ATTEMPTS
+            );
+
+            match peripheral.connect().await {
+                Ok(_) => {
+                    tracing::info!("Connected to MeshCore device");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("Connection attempt {} failed: {}", connect_attempts, e);
+                    if connect_attempts >= MAX_CONNECT_ATTEMPTS {
+                        return Err(Error::connection(format!(
+                            "Failed to connect after {} attempts: {}",
+                            MAX_CONNECT_ATTEMPTS, e
+                        )));
+                    }
+                    // Short delay before retry
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                }
+            }
+        }
 
         // Discover services
         peripheral
@@ -311,17 +328,21 @@ impl MeshCore {
         let peripheral_read = peripheral.clone();
 
         // Spawn write task
+        // BLE does NOT use framing - send raw payload directly (unlike serial which uses [0x3c][len][payload])
         let write_task = tokio::spawn(async move {
             while let Some(data) = rx.recv().await {
-                let framed = frame_packet(&data);
+                tracing::debug!("BLE TX: {} bytes: {:02x?}", data.len(), &data);
                 // BLE has MTU limits, so we may need to chunk the data
-                for chunk in framed.chunks(244) {
-                    if peripheral_write
+                for chunk in data.chunks(244) {
+                    match peripheral_write
                         .write(&tx_char, chunk, WriteType::WithoutResponse)
                         .await
-                        .is_err()
                     {
-                        break;
+                        Ok(_) => tracing::trace!("BLE TX chunk: {} bytes sent", chunk.len()),
+                        Err(e) => {
+                            tracing::error!("BLE TX error: {}", e);
+                            break;
+                        }
                     }
                 }
             }
@@ -333,8 +354,6 @@ impl MeshCore {
         let dispatcher = meshcore.dispatcher.clone();
 
         let read_task = tokio::spawn(async move {
-            let mut buffer = bytes::BytesMut::with_capacity(4096);
-
             let mut notification_stream = match peripheral_read.notifications().await {
                 Ok(stream) => stream,
                 Err(_) => {
@@ -347,27 +366,19 @@ impl MeshCore {
             };
 
             while let Some(data) = notification_stream.next().await {
-                buffer.extend_from_slice(&data.value);
+                // BLE does NOT use framing - each notification IS a complete packet
+                // (unlike serial which uses [0x3c][len][payload])
+                let frame = data.value;
+                tracing::debug!(
+                    "BLE RX: type=0x{:02x}, len={}, data={:02x?}",
+                    frame.first().unwrap_or(&0),
+                    frame.len(),
+                    &frame
+                );
 
-                // Parse frames from buffer
-                while buffer.len() >= 3 {
-                    if buffer[0] != crate::packets::FRAME_START {
-                        use bytes::Buf;
-                        buffer.advance(1);
-                        continue;
-                    }
-
-                    let len = u16::from_le_bytes([buffer[1], buffer[2]]) as usize;
-                    if buffer.len() < 3 + len {
-                        break;
-                    }
-
-                    let frame = buffer[3..3 + len].to_vec();
-                    use bytes::Buf;
-                    buffer.advance(3 + len);
-
+                if !frame.is_empty() {
                     if let Err(e) = msg_reader.handle_rx(frame).await {
-                        tracing::error!("Error handling message: {}", e);
+                        tracing::error!("Error handling BLE message: {}", e);
                     }
                 }
             }
@@ -396,7 +407,7 @@ impl MeshCore {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
-        let meshcore = Self::new_with_sender(tx, Duration::from_secs(5));
+        let meshcore = Self::new_with_sender(tx);
 
         // Connect via TCP
         let addr = format!("{}:{}", host, port);
@@ -621,7 +632,9 @@ impl MeshCore {
     where
         F: Fn(Event) + Send + Sync + 'static,
     {
-        self.dispatcher.subscribe(event_type, filters, callback).await
+        self.dispatcher
+            .subscribe(event_type, filters, callback)
+            .await
     }
 
     /// Wait for a specific event

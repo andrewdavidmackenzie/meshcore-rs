@@ -9,7 +9,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     // Get serial port from the command line or use default
-    let port = env::args().nth(1).unwrap_or_else(|| "/dev/ttyUSB0".to_string());
+    let port = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/dev/ttyUSB0".to_string());
 
     println!("Connecting to MeshCore device on {}...", port);
 
@@ -53,24 +55,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .send_msg(contact, "Hello from Rust!", None)
             .await?;
-        println!(
-            "Message sent! Expected ACK: {:02x?}",
-            result.expected_ack
-        );
+        println!("Message sent! Expected ACK: {:02x?}", result.expected_ack);
     }
 
     // Subscribe to incoming messages
     println!("\nListening for messages (press Ctrl+C to exit)...");
 
     let _sub = meshcore
-        .subscribe(EventType::ContactMsgRecv, std::collections::HashMap::new(), |event| {
-            if let meshcore::events::EventPayload::Message(msg) = event.payload {
-                println!(
-                    "Received message from {:02x?}: {}",
-                    msg.sender_prefix, msg.text
-                );
-            }
-        })
+        .subscribe(
+            EventType::ContactMsgRecv,
+            std::collections::HashMap::new(),
+            |event| {
+                if let meshcore::events::EventPayload::Message(msg) = event.payload {
+                    println!(
+                        "Received message from {:02x?}: {}",
+                        msg.sender_prefix, msg.text
+                    );
+                }
+            },
+        )
         .await;
 
     // Start auto-fetching messages
