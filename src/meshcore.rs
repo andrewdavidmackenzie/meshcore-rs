@@ -23,7 +23,7 @@ pub struct MeshCore {
     commands: Arc<Mutex<CommandHandler>>,
     /// Contact cache
     contacts: Arc<RwLock<HashMap<String, Contact>>>,
-    /// Self info cache
+    /// Self-info cache
     self_info: Arc<RwLock<Option<SelfInfo>>>,
     /// Device time cache
     device_time: Arc<RwLock<Option<u32>>>,
@@ -97,6 +97,7 @@ impl MeshCore {
         let connected = meshcore.connected.clone();
         let dispatcher = meshcore.dispatcher.clone();
 
+        // TODO the read task should be extractable from the discovery methods I think
         let read_task = tokio::spawn(async move {
             let mut buffer = BytesMut::with_capacity(4096);
             let mut read_buf = [0u8; 1024];
@@ -253,10 +254,7 @@ impl MeshCore {
             })
             .await;
 
-            match timeout {
-                Ok(p) => p,
-                Err(_) => None,
-            }
+            timeout.unwrap_or_else(|_| None)
         };
 
         // Stop scanning
@@ -423,6 +421,7 @@ impl MeshCore {
         let connected = meshcore.connected.clone();
         let dispatcher = meshcore.dispatcher.clone();
 
+        // TODO the read task should be extractable from the discovery methods I think
         let read_task = tokio::spawn(async move {
             let mut buffer = BytesMut::with_capacity(4096);
             let mut read_buf = [0u8; 1024];
@@ -507,7 +506,7 @@ impl MeshCore {
 
         let self_info = self.self_info.clone();
 
-        // Subscribe to self info updates
+        // Subscribe to self-info updates
         self.dispatcher
             .subscribe(EventType::SelfInfo, HashMap::new(), move |event| {
                 if let EventPayload::SelfInfo(info) = event.payload {
@@ -564,7 +563,7 @@ impl MeshCore {
         self.contacts.read().await.clone()
     }
 
-    /// Get cached self info
+    /// Get cached self-info
     pub async fn self_info(&self) -> Option<SelfInfo> {
         self.self_info.read().await.clone()
     }
@@ -574,7 +573,7 @@ impl MeshCore {
         *self.device_time.read().await
     }
 
-    /// Check if contacts cache is dirty
+    /// Check if the contact cache is dirty
     pub async fn contacts_dirty(&self) -> bool {
         *self.contacts_dirty.read().await
     }
@@ -652,7 +651,7 @@ impl MeshCore {
                         let result = commands.lock().await.get_msg().await;
                         match result {
                             Ok(Some(_msg)) => {
-                                // Message already emitted by reader
+                                // Message already emitted by the reader
                             }
                             Ok(None) => break, // No more messages
                             Err(_) => break,

@@ -515,7 +515,7 @@ impl CommandHandler {
                 &[
                     EventType::ContactMsgRecv,
                     EventType::ChannelMsgRecv,
-                    EventType::NoMoreMsgs,
+                    EventType::NoMoreMessages,
                     EventType::Error,
                 ],
                 timeout,
@@ -527,7 +527,7 @@ impl CommandHandler {
                 EventPayload::Message(msg) => Ok(Some(msg)),
                 _ => Err(Error::protocol("Unexpected payload for message")),
             },
-            EventType::NoMoreMsgs => Ok(None),
+            EventType::NoMoreMessages => Ok(None),
             EventType::Error => match event.payload {
                 EventPayload::String(msg) => Err(Error::device(msg)),
                 _ => Err(Error::device("Unknown error")),

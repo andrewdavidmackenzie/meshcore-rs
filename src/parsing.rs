@@ -121,7 +121,7 @@ pub fn parse_contact(data: &[u8]) -> Result<Contact> {
         last_advert,
         adv_lat,
         adv_lon,
-        lastmod,
+        last_modification_timestamp: lastmod,
     })
 }
 
@@ -440,7 +440,7 @@ pub fn from_microdegrees(micro: i32) -> f64 {
 /// Encode a hex string to bytes
 pub fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let s = s.trim_start_matches("0x");
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(Error::invalid_param("Hex string must have even length"));
     }
 

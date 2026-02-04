@@ -218,7 +218,7 @@ impl MessageReader {
             }
 
             PacketType::NoMoreMsgs => {
-                let event = Event::new(EventType::NoMoreMsgs, EventPayload::None);
+                let event = Event::new(EventType::NoMoreMessages, EventPayload::None);
                 self.dispatcher.emit(event).await;
             }
 
@@ -318,7 +318,7 @@ impl MessageReader {
 
             PacketType::AutoaddConfig => {
                 let flags = if !payload.is_empty() { payload[0] } else { 0 };
-                let event = Event::new(EventType::AutoaddConfig, EventPayload::AutoaddConfig { flags });
+                let event = Event::new(EventType::AutoAddConfig, EventPayload::AutoAddConfig { flags });
                 self.dispatcher.emit(event).await;
             }
 
@@ -498,7 +498,7 @@ impl MessageReader {
                             let mut offset = 1;
                             while offset + 38 <= payload.len() {
                                 let pubkey = payload[offset..offset + 32].to_vec();
-                                let name = read_string(&payload, offset + 32, 32);
+                                let name = read_string(payload, offset + 32, 32);
                                 entries.push(DiscoverEntry { pubkey, name });
                                 offset += 64;
                             }

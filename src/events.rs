@@ -1,6 +1,6 @@
 //! Event system for MeshCore communication
 //!
-//! Events are emitted by the reader when packets are received from the device.
+//! The reader emits events when packets are received from the device.
 //! Users can subscribe to specific event types with optional attribute filtering.
 
 use std::collections::HashMap;
@@ -35,13 +35,13 @@ pub enum EventType {
     StatsCore,
     StatsRadio,
     StatsPackets,
-    AutoaddConfig,
+    AutoAddConfig,
 
     // Messaging events
     ContactMsgRecv,
     ChannelMsgRecv,
     MsgSent,
-    NoMoreMsgs,
+    NoMoreMessages,
     ContactUri,
 
     // Push notifications
@@ -93,7 +93,7 @@ pub enum EventPayload {
     Contacts(Vec<Contact>),
     /// Single contact
     Contact(Contact),
-    /// Self info
+    /// Self-info
     SelfInfo(SelfInfo),
     /// Device info
     DeviceInfo(DeviceInfoData),
@@ -141,8 +141,8 @@ pub enum EventPayload {
     AdvertResponse(AdvertResponseData),
     /// Stats data
     Stats(StatsData),
-    /// Autoadd config
-    AutoaddConfig { flags: u8 },
+    /// AutoAdd config
+    AutoAddConfig { flags: u8 },
 }
 
 /// Contact information
@@ -167,7 +167,7 @@ pub struct Contact {
     /// Longitude in microdegrees
     pub adv_lon: i32,
     /// Last modification timestamp
-    pub lastmod: u32,
+    pub last_modification_timestamp: u32,
 }
 
 impl Contact {
@@ -199,7 +199,7 @@ impl Contact {
     }
 }
 
-/// Device self info
+/// Device self-info
 #[derive(Debug, Clone)]
 pub struct SelfInfo {
     /// Advertisement type
@@ -214,7 +214,7 @@ pub struct SelfInfo {
     pub adv_lat: i32,
     /// Longitude in microdegrees
     pub adv_lon: i32,
-    /// Multi-acks setting
+    /// Multi ack setting
     pub multi_acks: u8,
     /// Advertisement location policy
     pub adv_loc_policy: u8,
@@ -224,7 +224,7 @@ pub struct SelfInfo {
     pub telemetry_mode_loc: u8,
     /// Environment telemetry mode (bits 4-5)
     pub telemetry_mode_env: u8,
-    /// Manual add contacts setting
+    /// Manually add contact setting
     pub manual_add_contacts: bool,
     /// Radio frequency in mHz
     pub radio_freq: u32,
@@ -399,11 +399,11 @@ pub struct AclEntry {
 pub struct NeighboursData {
     /// Total neighbours available
     pub total: u16,
-    /// Neighbours in this response
+    /// Neighbors in this response
     pub neighbours: Vec<Neighbour>,
 }
 
-/// Single neighbour entry
+/// Single neighbor entry
 #[derive(Debug, Clone)]
 pub struct Neighbour {
     /// Public key (variable length)
@@ -504,7 +504,7 @@ impl Event {
     pub fn matches_filters(&self, filters: &HashMap<String, String>) -> bool {
         filters
             .iter()
-            .all(|(k, v)| self.attributes.get(k).map_or(false, |av| av == v))
+            .all(|(k, v)| self.attributes.get(k) == Some(v))
     }
 }
 
@@ -588,7 +588,7 @@ impl EventDispatcher {
 
     /// Emit an event to all matching subscribers
     pub async fn emit(&self, event: Event) {
-        // Process any pending unsubscribes
+        // Process any pending unsubscription events
         {
             let mut rx = self.unsubscribe_rx.write().await;
             while let Ok(id) = rx.try_recv() {
