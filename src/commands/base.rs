@@ -848,7 +848,7 @@ impl CommandHandler {
         }
     }
 
-    /// Request neighbours from a contact
+    /// Request neighbors from a contact
     pub async fn req_neighbours(
         &self,
         dest: impl Into<Destination>,
@@ -859,7 +859,7 @@ impl CommandHandler {
             .await
     }
 
-    /// Request neighbours with custom timeout
+    /// Request neighbors with custom timeout
     ///
     /// Format: [CMD_SEND_BINARY_REQ=0x32][req_type][pubkey: 32][count: u16][offset: u16]
     pub async fn req_neighbours_with_timeout(

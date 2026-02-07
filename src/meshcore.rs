@@ -4,13 +4,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
-
+use uuid::Uuid;
 use crate::commands::CommandHandler;
 use crate::connection::frame_packet;
 use crate::events::*;
 use crate::reader::MessageReader;
 use crate::Error;
 use crate::Result;
+
+// MeshCore BLE service and characteristic UUIDs
+// These are the standard UUIDs used by MeshCore devices
+pub const MESHCORE_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
+pub const MESHCORE_TX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
+pub const MESHCORE_RX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
+
 
 /// MeshCore client for communicating with MeshCore devices
 pub struct MeshCore {
@@ -167,12 +174,6 @@ impl MeshCore {
         use btleplug::platform::{Manager, Peripheral};
         use futures::stream::StreamExt;
         use uuid::Uuid;
-
-        // MeshCore BLE service and characteristic UUIDs
-        // These are the standard UUIDs used by MeshCore devices
-        const MESHCORE_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
-        const MESHCORE_TX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
-        const MESHCORE_RX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
 
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
         let meshcore = Self::new_with_sender(tx);
