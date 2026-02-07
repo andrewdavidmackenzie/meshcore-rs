@@ -1,5 +1,5 @@
 [package]
-name = "meshcore"
+name = "meshcore-rs"
 version = "0.1.0"
 edition = "2021"
 description = "Rust library for communicating with MeshCore companion radio nodes"
