@@ -3,21 +3,28 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex, RwLock};
+#[cfg(any(feature = "serial", feature = "ble", feature = "tcp"))]
+use tokio::sync::mpsc;
+use tokio::sync::{Mutex, RwLock};
+#[cfg(feature = "ble")]
 use uuid::Uuid;
 use crate::commands::CommandHandler;
+#[cfg(any(feature = "serial", feature = "tcp"))]
 use crate::connection::frame_packet;
 use crate::events::*;
 use crate::reader::MessageReader;
+#[cfg(any(feature = "serial", feature = "ble", feature = "tcp"))]
 use crate::Error;
 use crate::Result;
 
 // MeshCore BLE service and characteristic UUIDs
 // These are the standard UUIDs used by MeshCore devices
-pub const MESHCORE_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
-pub const MESHCORE_TX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
-pub const MESHCORE_RX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
-
+#[cfg(feature = "ble")]
+const MESHCORE_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
+#[cfg(feature = "ble")]
+const MESHCORE_TX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
+#[cfg(feature = "ble")]
+const MESHCORE_RX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
 
 /// MeshCore client for communicating with MeshCore devices
 pub struct MeshCore {
@@ -44,6 +51,7 @@ pub struct MeshCore {
 }
 
 impl MeshCore {
+    #[cfg(any(feature = "serial", feature = "ble", feature = "tcp"))]
     /// Create a new MeshCore client with a custom connection
     fn new_with_sender(sender: mpsc::Sender<Vec<u8>>) -> Self {
         let dispatcher = Arc::new(EventDispatcher::new());
@@ -491,6 +499,7 @@ impl MeshCore {
         Ok(meshcore)
     }
 
+    #[cfg(any(feature = "serial", feature = "ble", feature = "tcp"))]
     /// Set up internal event handlers for caching
     async fn setup_event_handlers(&self) {
         let contacts = self.contacts.clone();

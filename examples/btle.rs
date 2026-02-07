@@ -7,7 +7,7 @@
 //!   cargo run --example btle
 //!   cargo run --example btle -- "DeviceName"
 
-use meshcore::{EventType, MeshCore};
+use meshcore_rs::{EventType, MeshCore};
 use std::env;
 
 #[tokio::main]
@@ -66,18 +66,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Send a message to the first contact (if any)
-    // if let Some(contact) = contacts.first() {
-    //     println!("\nSending test message to {}...", contact.adv_name);
-    //     let result = meshcore
-    //         .commands()
-    //         .lock()
-    //         .await
-    //         .send_msg(contact, "Hello from Rust via BLE!", None)
-    //         .await?;
-    //     println!("Message sent! Expected ACK: {:02x?}", result.expected_ack);
-    // }
-
     // Subscribe to incoming messages
     println!("\nListening for messages (press Ctrl+C to exit)...");
 
@@ -86,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             EventType::ContactMsgRecv,
             std::collections::HashMap::new(),
             |event| {
-                if let meshcore::events::EventPayload::Message(msg) = event.payload {
+                if let meshcore_rs::events::EventPayload::Message(msg) = event.payload {
                     println!(
                         "Received message from {:02x?}: {}",
                         msg.sender_prefix, msg.text
