@@ -173,7 +173,6 @@ impl MeshCore {
         };
         use btleplug::platform::{Manager, Peripheral};
         use futures::stream::StreamExt;
-        use uuid::Uuid;
 
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
         let meshcore = Self::new_with_sender(tx);
