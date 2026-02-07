@@ -115,7 +115,8 @@ impl MessageReader {
                 if let Ok(contact) = parse_contact(payload) {
                     if packet_type == PacketType::PushCodeNewAdvert {
                         // Emit as a new contact event
-                        let event = Event::new(EventType::NewContact, EventPayload::Contact(contact));
+                        let event =
+                            Event::new(EventType::NewContact, EventPayload::Contact(contact));
                         self.dispatcher.emit(event).await;
                     } else {
                         // Add to pending contacts
@@ -131,7 +132,8 @@ impl MessageReader {
                 } else {
                     0
                 };
-                *self.contacts_last_modification_timestamp.write().await = last_modification_timestamp;
+                *self.contacts_last_modification_timestamp.write().await =
+                    last_modification_timestamp;
 
                 // Emit contacts event
                 let contacts = std::mem::take(&mut *self.pending_contacts.write().await);
@@ -274,7 +276,10 @@ impl MessageReader {
             }
 
             PacketType::Signature => {
-                let event = Event::new(EventType::Signature, EventPayload::Signature(payload.to_vec()));
+                let event = Event::new(
+                    EventType::Signature,
+                    EventPayload::Signature(payload.to_vec()),
+                );
                 self.dispatcher.emit(event).await;
             }
 
@@ -318,7 +323,10 @@ impl MessageReader {
 
             PacketType::AutoaddConfig => {
                 let flags = if !payload.is_empty() { payload[0] } else { 0 };
-                let event = Event::new(EventType::AutoAddConfig, EventPayload::AutoAddConfig { flags });
+                let event = Event::new(
+                    EventType::AutoAddConfig,
+                    EventPayload::AutoAddConfig { flags },
+                );
                 self.dispatcher.emit(event).await;
             }
 
@@ -402,8 +410,9 @@ impl MessageReader {
                     let sender_prefix: [u8; 6] = read_bytes(payload, 0).unwrap_or([0; 6]);
                     if let Ok(status) = parse_status(&payload[6..], sender_prefix) {
                         let tag_hex = hex_encode(&sender_prefix);
-                        let event = Event::new(EventType::StatusResponse, EventPayload::Status(status))
-                            .with_attribute("prefix", tag_hex);
+                        let event =
+                            Event::new(EventType::StatusResponse, EventPayload::Status(status))
+                                .with_attribute("prefix", tag_hex);
                         self.dispatcher.emit(event).await;
                     }
                 }
@@ -414,9 +423,11 @@ impl MessageReader {
                 if payload.len() >= 4 {
                     let tag: [u8; 4] = read_bytes(payload, 0).unwrap_or([0; 4]);
                     let telemetry = payload[4..].to_vec();
-                    let event =
-                        Event::new(EventType::TelemetryResponse, EventPayload::Telemetry(telemetry))
-                            .with_attribute("tag", hex_encode(&tag));
+                    let event = Event::new(
+                        EventType::TelemetryResponse,
+                        EventPayload::Telemetry(telemetry),
+                    )
+                    .with_attribute("tag", hex_encode(&tag));
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -435,7 +446,10 @@ impl MessageReader {
                         let event = match req.request_type {
                             BinaryReqType::Status => {
                                 if let Ok(status) = parse_status(&data, [0; 6]) {
-                                    Event::new(EventType::StatusResponse, EventPayload::Status(status))
+                                    Event::new(
+                                        EventType::StatusResponse,
+                                        EventPayload::Status(status),
+                                    )
                                 } else {
                                     Event::new(
                                         EventType::BinaryResponse,
@@ -443,9 +457,10 @@ impl MessageReader {
                                     )
                                 }
                             }
-                            BinaryReqType::Telemetry => {
-                                Event::new(EventType::TelemetryResponse, EventPayload::Telemetry(data))
-                            }
+                            BinaryReqType::Telemetry => Event::new(
+                                EventType::TelemetryResponse,
+                                EventPayload::Telemetry(data),
+                            ),
                             BinaryReqType::Mma => {
                                 let entries = parse_mma(&data);
                                 Event::new(EventType::MmaResponse, EventPayload::Mma(entries))
@@ -509,8 +524,10 @@ impl MessageReader {
                             self.dispatcher.emit(event).await;
                         }
                         _ => {
-                            let event =
-                                Event::new(EventType::ControlData, EventPayload::Bytes(payload.to_vec()));
+                            let event = Event::new(
+                                EventType::ControlData,
+                                EventPayload::Bytes(payload.to_vec()),
+                            );
                             self.dispatcher.emit(event).await;
                         }
                     }
@@ -528,7 +545,10 @@ impl MessageReader {
                     hops.push(TraceHop { prefix, snr });
                     offset += 7;
                 }
-                let event = Event::new(EventType::TraceData, EventPayload::TraceData(TraceInfo { hops }));
+                let event = Event::new(
+                    EventType::TraceData,
+                    EventPayload::TraceData(TraceInfo { hops }),
+                );
                 self.dispatcher.emit(event).await;
             }
 

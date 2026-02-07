@@ -12,8 +12,13 @@ use std::env;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    // Initialize logging with DEBUG level for meshcore
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("meshcore=debug".parse().unwrap()),
+        )
+        .init();
 
     // Get optional device name from command line
     let device_name = env::args().nth(1);
@@ -43,9 +48,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let battery = meshcore.commands().lock().await.get_bat().await?;
     println!("  Battery: {}%", battery.level);
 
-    // Get contacts
+    // Get contacts (use longer timeout for BLE - contacts can take a while)
     println!("\nFetching contacts...");
-    let contacts = meshcore.commands().lock().await.get_contacts(0).await?;
+    let contacts = meshcore
+        .commands()
+        .lock()
+        .await
+        .get_contacts_with_timeout(0, std::time::Duration::from_secs(30))
+        .await?;
     println!("Found {} contacts:", contacts.len());
 
     for contact in &contacts {
@@ -57,32 +67,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Send a message to the first contact (if any)
-    if let Some(contact) = contacts.first() {
-        println!("\nSending test message to {}...", contact.adv_name);
-        let result = meshcore
-            .commands()
-            .lock()
-            .await
-            .send_msg(contact, "Hello from Rust via BLE!", None)
-            .await?;
-        println!(
-            "Message sent! Expected ACK: {:02x?}",
-            result.expected_ack
-        );
-    }
+    // if let Some(contact) = contacts.first() {
+    //     println!("\nSending test message to {}...", contact.adv_name);
+    //     let result = meshcore
+    //         .commands()
+    //         .lock()
+    //         .await
+    //         .send_msg(contact, "Hello from Rust via BLE!", None)
+    //         .await?;
+    //     println!("Message sent! Expected ACK: {:02x?}", result.expected_ack);
+    // }
 
     // Subscribe to incoming messages
     println!("\nListening for messages (press Ctrl+C to exit)...");
 
     let _sub = meshcore
-        .subscribe(EventType::ContactMsgRecv, std::collections::HashMap::new(), |event| {
-            if let meshcore::events::EventPayload::Message(msg) = event.payload {
-                println!(
-                    "Received message from {:02x?}: {}",
-                    msg.sender_prefix, msg.text
-                );
-            }
-        })
+        .subscribe(
+            EventType::ContactMsgRecv,
+            std::collections::HashMap::new(),
+            |event| {
+                if let meshcore::events::EventPayload::Message(msg) = event.payload {
+                    println!(
+                        "Received message from {:02x?}: {}",
+                        msg.sender_prefix, msg.text
+                    );
+                }
+            },
+        )
         .await;
 
     // Start auto-fetching messages

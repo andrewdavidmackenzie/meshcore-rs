@@ -1,9 +1,9 @@
 //! Binary parsing utilities for MeshCore protocol
 
+use crate::error::Error;
 use crate::events::{
     AclEntry, Contact, MmaEntry, Neighbour, NeighboursData, ReceivedMessage, SelfInfo, StatusData,
 };
-use crate::error::Error;
 use crate::Result;
 
 /// Read a little-endian u16 from a byte slice
@@ -64,10 +64,7 @@ pub fn read_string(data: &[u8], offset: usize, max_len: usize) -> String {
 /// Read a fixed-size byte array
 pub fn read_bytes<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N]> {
     if offset + N > data.len() {
-        return Err(Error::protocol(format!(
-            "Buffer too short for {} bytes",
-            N
-        )));
+        return Err(Error::protocol(format!("Buffer too short for {} bytes", N)));
     }
     let mut arr = [0u8; N];
     arr.copy_from_slice(&data[offset..offset + N]);

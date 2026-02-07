@@ -180,12 +180,12 @@ impl Contact {
 
     /// Get the public key as a hex string
     pub fn public_key_hex(&self) -> String {
-        hex::encode(self.public_key)
+        crate::parsing::hex_encode(&self.public_key)
     }
 
     /// Get the prefix as a hex string
     pub fn prefix_hex(&self) -> String {
-        hex::encode(self.prefix())
+        crate::parsing::hex_encode(&self.prefix())
     }
 
     /// Get latitude as decimal degrees
@@ -510,9 +510,9 @@ impl Event {
 
 /// Subscription handle returned when subscribing to events
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct Subscription {
     id: u64,
+    #[allow(dead_code)]
     event_type: EventType,
     unsubscribe_tx: mpsc::Sender<u64>,
 }
@@ -643,15 +643,5 @@ impl EventDispatcher {
 impl Default for EventDispatcher {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-// We need hex for the Contact methods
-mod hex {
-    pub fn encode(data: impl AsRef<[u8]>) -> String {
-        data.as_ref()
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect()
     }
 }
