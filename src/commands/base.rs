@@ -603,12 +603,12 @@ impl CommandHandler {
 
     // ========== Messaging Commands ==========
 
-    /// Get next message from queue
+    /// Get the next message from the queue
     pub async fn get_msg(&self) -> Result<Option<ReceivedMessage>> {
         self.get_msg_with_timeout(self.default_timeout).await
     }
 
-    /// Get next message with custom timeout
+    /// Get the next message with a custom timeout
     ///
     /// Format: [CMD_SYNC_NEXT_MESSAGE=0x0A]
     pub async fn get_msg_with_timeout(&self, timeout: Duration) -> Result<Option<ReceivedMessage>> {
@@ -981,5 +981,771 @@ impl CommandHandler {
         // Get signature with extended timeout
         let timeout = Duration::from_secs(30);
         self.sign_finish(timeout).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== Destination Tests ==========
+
+    #[test]
+    fn test_destination_from_bytes_slice() {
+        let bytes: &[u8] = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let dest: Destination = bytes.into();
+        assert!(matches!(dest, Destination::Bytes(_)));
+    }
+
+    #[test]
+    fn test_destination_from_vec() {
+        let bytes = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        let dest: Destination = bytes.into();
+        assert!(matches!(dest, Destination::Bytes(_)));
+    }
+
+    #[test]
+    fn test_destination_from_str() {
+        let dest: Destination = "0102030405060708".into();
+        assert!(matches!(dest, Destination::Hex(_)));
+    }
+
+    #[test]
+    fn test_destination_from_string() {
+        let dest: Destination = String::from("0102030405060708").into();
+        assert!(matches!(dest, Destination::Hex(_)));
+    }
+
+    #[test]
+    fn test_destination_from_contact() {
+        let contact = Contact {
+            public_key: [0xAA; 32],
+            contact_type: 1,
+            flags: 0,
+            path_len: -1,
+            out_path: vec![],
+            adv_name: "Test".to_string(),
+            last_advert: 0,
+            adv_lat: 0,
+            adv_lon: 0,
+            last_modification_timestamp: 0,
+        };
+        let dest: Destination = contact.into();
+        assert!(matches!(dest, Destination::Contact(_)));
+    }
+
+    #[test]
+    fn test_destination_from_contact_ref() {
+        let contact = Contact {
+            public_key: [0xBB; 32],
+            contact_type: 1,
+            flags: 0,
+            path_len: -1,
+            out_path: vec![],
+            adv_name: "Test".to_string(),
+            last_advert: 0,
+            adv_lat: 0,
+            adv_lon: 0,
+            last_modification_timestamp: 0,
+        };
+        let dest: Destination = (&contact).into();
+        assert!(matches!(dest, Destination::Contact(_)));
+    }
+
+    #[test]
+    fn test_destination_prefix_from_bytes() {
+        let bytes = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let dest: Destination = bytes.into();
+        let prefix = dest.prefix().unwrap();
+        assert_eq!(prefix, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+    }
+
+    #[test]
+    fn test_destination_prefix_from_bytes_too_short() {
+        let bytes = vec![0x01, 0x02, 0x03];
+        let dest: Destination = bytes.into();
+        assert!(dest.prefix().is_err());
+    }
+
+    #[test]
+    fn test_destination_prefix_from_hex() {
+        let dest: Destination = "010203040506".into();
+        let prefix = dest.prefix().unwrap();
+        assert_eq!(prefix, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+    }
+
+    #[test]
+    fn test_destination_prefix_from_hex_too_short() {
+        let dest: Destination = "0102".into();
+        assert!(dest.prefix().is_err());
+    }
+
+    #[test]
+    fn test_destination_prefix_from_contact() {
+        let mut public_key = [0u8; 32];
+        public_key[0..6].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        let contact = Contact {
+            public_key,
+            contact_type: 1,
+            flags: 0,
+            path_len: -1,
+            out_path: vec![],
+            adv_name: "Test".to_string(),
+            last_advert: 0,
+            adv_lat: 0,
+            adv_lon: 0,
+            last_modification_timestamp: 0,
+        };
+        let dest: Destination = contact.into();
+        let prefix = dest.prefix().unwrap();
+        assert_eq!(prefix, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    }
+
+    #[test]
+    fn test_destination_public_key_from_bytes_32() {
+        let bytes = vec![0xAA; 32];
+        let dest: Destination = bytes.into();
+        let key = dest.public_key().unwrap();
+        assert_eq!(key, [0xAA; 32]);
+    }
+
+    #[test]
+    fn test_destination_public_key_from_bytes_short() {
+        let bytes = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        let dest: Destination = bytes.into();
+        assert!(dest.public_key().is_none());
+    }
+
+    #[test]
+    fn test_destination_public_key_from_hex_32() {
+        // 32 bytes = 64 hex chars
+        let hex = "aa".repeat(32);
+        let dest: Destination = hex.into();
+        let key = dest.public_key().unwrap();
+        assert_eq!(key, [0xAA; 32]);
+    }
+
+    #[test]
+    fn test_destination_public_key_from_hex_short() {
+        let dest: Destination = "010203040506".into();
+        assert!(dest.public_key().is_none());
+    }
+
+    #[test]
+    fn test_destination_public_key_from_contact() {
+        let contact = Contact {
+            public_key: [0xCC; 32],
+            contact_type: 1,
+            flags: 0,
+            path_len: -1,
+            out_path: vec![],
+            adv_name: "Test".to_string(),
+            last_advert: 0,
+            adv_lat: 0,
+            adv_lon: 0,
+            last_modification_timestamp: 0,
+        };
+        let dest: Destination = contact.into();
+        let key = dest.public_key().unwrap();
+        assert_eq!(key, [0xCC; 32]);
+    }
+
+    #[test]
+    fn test_destination_clone() {
+        let dest = Destination::Hex("0102030405060708".to_string());
+        let cloned = dest.clone();
+        assert!(matches!(cloned, Destination::Hex(_)));
+    }
+
+    #[test]
+    fn test_destination_debug() {
+        let dest = Destination::Bytes(vec![1, 2, 3]);
+        let debug_str = format!("{:?}", dest);
+        assert!(debug_str.contains("Bytes"));
+    }
+
+    // ========== Constants Tests ==========
+
+    #[test]
+    fn test_default_timeout() {
+        assert_eq!(DEFAULT_TIMEOUT, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_command_constants() {
+        assert_eq!(CMD_APP_START, 1);
+        assert_eq!(CMD_SEND_TXT_MSG, 2);
+        assert_eq!(CMD_SEND_CHANNEL_TXT_MSG, 3);
+        assert_eq!(CMD_GET_CONTACTS, 4);
+        assert_eq!(CMD_GET_DEVICE_TIME, 5);
+        assert_eq!(CMD_SET_DEVICE_TIME, 6);
+        assert_eq!(CMD_SEND_SELF_ADVERT, 7);
+        assert_eq!(CMD_SET_ADVERT_NAME, 8);
+        assert_eq!(CMD_ADD_UPDATE_CONTACT, 9);
+        assert_eq!(CMD_SYNC_NEXT_MESSAGE, 10);
+        assert_eq!(CMD_SET_RADIO_TX_POWER, 12);
+        assert_eq!(CMD_SET_ADVERT_LATLON, 14);
+        assert_eq!(CMD_REMOVE_CONTACT, 15);
+        assert_eq!(CMD_EXPORT_CONTACT, 17);
+        assert_eq!(CMD_IMPORT_CONTACT, 18);
+        assert_eq!(CMD_REBOOT, 19);
+        assert_eq!(CMD_GET_BATT_AND_STORAGE, 20);
+        assert_eq!(CMD_DEVICE_QUERY, 22);
+        assert_eq!(CMD_EXPORT_PRIVATE_KEY, 23);
+        assert_eq!(CMD_IMPORT_PRIVATE_KEY, 24);
+        assert_eq!(CMD_SEND_LOGIN, 26);
+        assert_eq!(CMD_LOGOUT, 29);
+        assert_eq!(CMD_GET_CHANNEL, 31);
+        assert_eq!(CMD_SET_CHANNEL, 32);
+        assert_eq!(CMD_SIGN_START, 33);
+        assert_eq!(CMD_SIGN_DATA, 34);
+        assert_eq!(CMD_SIGN_FINISH, 35);
+        assert_eq!(CMD_GET_CUSTOM_VARS, 40);
+        assert_eq!(CMD_SET_CUSTOM_VAR, 41);
+        assert_eq!(CMD_SEND_BINARY_REQ, 50);
+    }
+
+    // ========== CommandHandler Tests with Mock Infrastructure ==========
+
+    fn create_test_handler() -> (CommandHandler, mpsc::Receiver<Vec<u8>>, Arc<EventDispatcher>) {
+        let (sender, receiver) = mpsc::channel(16);
+        let dispatcher = Arc::new(EventDispatcher::new());
+        let reader = Arc::new(MessageReader::new(dispatcher.clone()));
+        let handler = CommandHandler::new(sender, dispatcher.clone(), reader);
+        (handler, receiver, dispatcher)
+    }
+
+    #[tokio::test]
+    async fn test_command_handler_new() {
+        let (handler, _rx, _dispatcher) = create_test_handler();
+        assert_eq!(handler.default_timeout, DEFAULT_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn test_command_handler_set_default_timeout() {
+        let (mut handler, _rx, _dispatcher) = create_test_handler();
+        handler.set_default_timeout(Duration::from_secs(10));
+        assert_eq!(handler.default_timeout, Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn test_command_handler_send_timeout() {
+        let (handler, mut rx, _dispatcher) = create_test_handler();
+
+        // Spawn a task to receive the sent data
+        let recv_task = tokio::spawn(async move {
+            rx.recv().await
+        });
+
+        // Send with a short timeout - should timeout since no response comes
+        let result = handler
+            .send_with_timeout(&[0x01], EventType::Ok, Duration::from_millis(10))
+            .await;
+
+        assert!(result.is_err());
+
+        // Verify data was sent
+        let sent = recv_task.await.unwrap();
+        assert_eq!(sent, Some(vec![0x01]));
+    }
+
+    #[tokio::test]
+    async fn test_command_handler_send_with_response() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        // Spawn a task that sends a response
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            // Wait for the command to be sent
+            let _sent = rx.recv().await;
+            // Emit the expected response
+            dispatcher_clone.emit(Event::ok()).await;
+        });
+
+        let result = handler
+            .send_with_timeout(&[0x01], EventType::Ok, Duration::from_millis(100))
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().event_type, EventType::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_command_handler_wait_for_event_timeout() {
+        let (handler, _rx, _dispatcher) = create_test_handler();
+
+        let result = handler
+            .wait_for_event(EventType::Ok, HashMap::new(), Duration::from_millis(10))
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_command_handler_wait_for_event_success() {
+        let (handler, _rx, dispatcher) = create_test_handler();
+
+        // Emit an event
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            dispatcher.emit(Event::ok()).await;
+        });
+
+        let result = handler
+            .wait_for_event(EventType::Ok, HashMap::new(), Duration::from_millis(100))
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_command_handler_wait_for_any_event() {
+        let (handler, _rx, dispatcher) = create_test_handler();
+
+        // Emit an error event
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            dispatcher.emit(Event::error("test")).await;
+        });
+
+        let result = handler
+            .wait_for_any_event(&[EventType::Ok, EventType::Error], Duration::from_millis(100))
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().event_type, EventType::Error);
+    }
+
+    #[tokio::test]
+    async fn test_command_handler_wait_for_any_event_timeout() {
+        let (handler, _rx, _dispatcher) = create_test_handler();
+
+        let result = handler
+            .wait_for_any_event(&[EventType::Ok, EventType::Error], Duration::from_millis(10))
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_command_handler_send_multi() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        // Spawn responder
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let _sent = rx.recv().await;
+            dispatcher_clone.emit(Event::error("device busy")).await;
+        });
+
+        let result = handler
+            .send_multi(
+                &[0x01],
+                &[EventType::Ok, EventType::Error],
+                Duration::from_millis(100),
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().event_type, EventType::Error);
+    }
+
+    #[tokio::test]
+    async fn test_send_appstart_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            // Verify APPSTART command format
+            assert_eq!(sent[0], CMD_APP_START);
+            assert_eq!(&sent[8..13], b"mccli");
+
+            // Send SelfInfo response
+            let info = SelfInfo {
+                adv_type: 1,
+                tx_power: 20,
+                max_tx_power: 30,
+                public_key: [0; 32],
+                adv_lat: 0,
+                adv_lon: 0,
+                multi_acks: 0,
+                adv_loc_policy: 0,
+                telemetry_mode_base: 0,
+                telemetry_mode_loc: 0,
+                telemetry_mode_env: 0,
+                manual_add_contacts: false,
+                radio_freq: 915000000,
+                radio_bw: 125000,
+                sf: 7,
+                cr: 5,
+                name: "TestDevice".to_string(),
+            };
+            dispatcher_clone
+                .emit(Event::new(EventType::SelfInfo, EventPayload::SelfInfo(info)))
+                .await;
+        });
+
+        let result = handler.send_appstart().await;
+        assert!(result.is_ok());
+        let info = result.unwrap();
+        assert_eq!(info.name, "TestDevice");
+        assert_eq!(info.tx_power, 20);
+    }
+
+    #[tokio::test]
+    async fn test_get_bat_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_GET_BATT_AND_STORAGE);
+
+            let info = BatteryInfo {
+                level: 85,
+                storage: 100,
+            };
+            dispatcher_clone
+                .emit(Event::new(EventType::Battery, EventPayload::Battery(info)))
+                .await;
+        });
+
+        let result = handler.get_bat().await;
+        assert!(result.is_ok());
+        let info = result.unwrap();
+        assert_eq!(info.level, 85);
+    }
+
+    #[tokio::test]
+    async fn test_get_time_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_GET_DEVICE_TIME);
+
+            dispatcher_clone
+                .emit(Event::new(EventType::CurrentTime, EventPayload::Time(1234567890)))
+                .await;
+        });
+
+        let result = handler.get_time().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1234567890);
+    }
+
+    #[tokio::test]
+    async fn test_set_time_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SET_DEVICE_TIME);
+            // Verify timestamp is included
+            let ts = u32::from_le_bytes([sent[1], sent[2], sent[3], sent[4]]);
+            assert_eq!(ts, 1234567890);
+
+            dispatcher_clone.emit(Event::ok()).await;
+        });
+
+        let result = handler.set_time(1234567890).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_name_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SET_ADVERT_NAME);
+            assert_eq!(&sent[1..], b"MyNode");
+
+            dispatcher_clone.emit(Event::ok()).await;
+        });
+
+        let result = handler.set_name("MyNode").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_coords_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SET_ADVERT_LATLON);
+            // Verify coordinates are present (lat + lon = 8 bytes after command)
+            assert!(sent.len() >= 9);
+
+            dispatcher_clone.emit(Event::ok()).await;
+        });
+
+        let result = handler.set_coords(37.7749, -122.4194).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_tx_power_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SET_RADIO_TX_POWER);
+            assert_eq!(sent[1], 20);
+
+            dispatcher_clone.emit(Event::ok()).await;
+        });
+
+        let result = handler.set_tx_power(20).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_advert_flood() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SEND_SELF_ADVERT);
+            assert_eq!(sent[1], 0x01); // flood flag
+
+            dispatcher_clone.emit(Event::ok()).await;
+        });
+
+        let result = handler.send_advert(true).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_advert_no_flood() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SEND_SELF_ADVERT);
+            assert_eq!(sent.len(), 1); // no flood flag
+
+            dispatcher_clone.emit(Event::ok()).await;
+        });
+
+        let result = handler.send_advert(false).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_reboot() {
+        let (handler, mut rx, _dispatcher) = create_test_handler();
+
+        let recv_task = tokio::spawn(async move {
+            rx.recv().await
+        });
+
+        let result = handler.reboot().await;
+        assert!(result.is_ok());
+
+        let sent = recv_task.await.unwrap().unwrap();
+        assert_eq!(sent[0], CMD_REBOOT);
+        assert_eq!(&sent[1..], b"reboot");
+    }
+
+    #[tokio::test]
+    async fn test_get_contacts_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_GET_CONTACTS);
+
+            let contacts = vec![Contact {
+                public_key: [0xAA; 32],
+                contact_type: 1,
+                flags: 0,
+                path_len: 2,
+                out_path: vec![],
+                adv_name: "Contact1".to_string(),
+                last_advert: 0,
+                adv_lat: 0,
+                adv_lon: 0,
+                last_modification_timestamp: 0,
+            }];
+            dispatcher_clone
+                .emit(Event::new(EventType::Contacts, EventPayload::Contacts(contacts)))
+                .await;
+        });
+
+        let result = handler.get_contacts(0).await;
+        assert!(result.is_ok());
+        let contacts = result.unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].adv_name, "Contact1");
+    }
+
+    #[tokio::test]
+    async fn test_export_contact_self() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_EXPORT_CONTACT);
+            assert_eq!(sent.len(), 1); // no pubkey for self
+
+            dispatcher_clone
+                .emit(Event::new(
+                    EventType::ContactUri,
+                    EventPayload::String("meshcore://...".to_string()),
+                ))
+                .await;
+        });
+
+        let result: Result<String> = handler.export_contact(None::<&str>).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().starts_with("meshcore://"));
+    }
+
+    #[tokio::test]
+    async fn test_get_channel_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_GET_CHANNEL);
+            assert_eq!(sent[1], 0); // channel idx
+
+            let info = ChannelInfoData {
+                channel_idx: 0,
+                name: "General".to_string(),
+                secret: [0; 16],
+            };
+            dispatcher_clone
+                .emit(Event::new(EventType::ChannelInfo, EventPayload::ChannelInfo(info)))
+                .await;
+        });
+
+        let result = handler.get_channel(0).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name, "General");
+    }
+
+    #[tokio::test]
+    async fn test_sign_start_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SIGN_START);
+
+            dispatcher_clone
+                .emit(Event::new(
+                    EventType::SignStart,
+                    EventPayload::SignStart { max_length: 4096 },
+                ))
+                .await;
+        });
+
+        let result = handler.sign_start().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 4096);
+    }
+
+    #[tokio::test]
+    async fn test_get_custom_vars_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_GET_CUSTOM_VARS);
+
+            let mut vars = HashMap::new();
+            vars.insert("key1".to_string(), "value1".to_string());
+            dispatcher_clone
+                .emit(Event::new(EventType::CustomVars, EventPayload::CustomVars(vars)))
+                .await;
+        });
+
+        let result = handler.get_custom_vars().await;
+        assert!(result.is_ok());
+        let vars = result.unwrap();
+        assert_eq!(vars.get("key1"), Some(&"value1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_set_custom_var_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SET_CUSTOM_VAR);
+            // Should contain "key=value"
+            let payload = String::from_utf8_lossy(&sent[1..]);
+            assert!(payload.contains("mykey=myvalue"));
+
+            dispatcher_clone.emit(Event::ok()).await;
+        });
+
+        let result = handler.set_custom_var("mykey", "myvalue").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_msg_no_more() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SYNC_NEXT_MESSAGE);
+
+            dispatcher_clone
+                .emit(Event::new(EventType::NoMoreMessages, EventPayload::None))
+                .await;
+        });
+
+        let result = handler.get_msg().await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_msg_with_message() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let _sent = rx.recv().await.unwrap();
+
+            let msg = ReceivedMessage {
+                sender_prefix: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
+                path_len: 2,
+                txt_type: 1,
+                sender_timestamp: 1234567890,
+                text: "Hello!".to_string(),
+                snr: None,
+                signature: None,
+                channel: None,
+            };
+            dispatcher_clone
+                .emit(Event::new(EventType::ContactMsgRecv, EventPayload::Message(msg)))
+                .await;
+        });
+
+        let result = handler.get_msg().await;
+        assert!(result.is_ok());
+        let msg = result.unwrap().unwrap();
+        assert_eq!(msg.text, "Hello!");
     }
 }
