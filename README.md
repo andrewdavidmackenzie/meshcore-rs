@@ -1,4 +1,5 @@
-# MeshCore-RS
+# MeshCore-rs
+[![codecov](https://codecov.io/gh/andrewdavidmackenzie/meshcore-rs/graph/badge.svg?token=cfyajKsYQa)](https://codecov.io/gh/andrewdavidmackenzie/meshcore-rs)
 
 Rust library for communicating with [MeshCore](https://meshcore.co.uk) companion radio nodes.
 
