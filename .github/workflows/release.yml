@@ -1,0 +1,36 @@
+name: Release Bundle
+
+on:
+  release:
+    types: [ published ]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-and-bundle:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-15, windows-latest, windows-11-arm, ubuntu-24.04-arm ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies - Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt install libdbus-1-dev pkg-config
+
+      - name: Build release
+        run: cargo build --release

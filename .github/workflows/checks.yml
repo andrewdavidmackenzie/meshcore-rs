@@ -1,0 +1,48 @@
+name: Code Checks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule: # Build every day at 5PM UTC
+    - cron: '0 17 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  Format-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run cargo fmt check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install dependencies
+        run: sudo apt install libdbus-1-dev pkg-config
+      - name: run clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --tests --no-deps --all-features --all-targets
+
+  todo-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Grep for TODOS
+        run: find . -name "*.rs" -exec grep "TODO" {} \; -print

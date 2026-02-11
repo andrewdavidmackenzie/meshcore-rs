@@ -1,0 +1,79 @@
+name: Build and Test Matrix
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule: # Build every day at 5PM UTC
+    - cron: '0 17 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -C instrument-coverage
+  LLVM_PROFILE_FILE: meshcore-%p-%m.profraw
+  RUST_BACKTRACE: 1
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build-and-test-matrix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-15, windows-11-arm, ubuntu-24.04-arm ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install grcov
+        if: runner.os != 'Windows'
+        run: cargo install grcov
+
+      - name: Setup LCOV
+        if: runner.os != 'Windows'
+        uses: hrishikesh-kadam/setup-lcov@v1
+        with:
+          ref: HEAD
+
+      - name: Install dependencies - Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt install libdbus-1-dev pkg-config
+
+      - name: debug build
+        run: cargo build
+
+      - name: Publish dry-run
+        run: cargo build --release && cargo publish --dry-run --allow-dirty --no-verify
+
+      - name: test
+        run: cargo test
+
+      - name: Clean up coverage
+        if: runner.os != 'Windows'
+        run: |
+          grcov . --binary-path target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" --ignore "**/test_helper.rs" --ignore "**/icons.rs" --ignore "**/styles.rs" -o lcov.info
+          lcov --remove lcov.info 'target/debug/build/**' 'target/release/build/**' '/usr*' '**/errors.rs' \
+          '**/build.rs' '*tests/*' '**/test_helper.rs' '**/icons.rs' '**/styles.rs' --ignore-errors unused,unused --ignore-errors unsupported --ignore-errors \
+          inconsistent --ignore-errors empty,empty -o lcov.info --erase-functions "(?=^.*fmt).+" --erase-functions "(?=^.*tests::).+"
+
+      - name: UploadCoverage
+        if: runner.os != 'Windows'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+          files: ./lcov.info
+          flags: unittests
+          name: codecov-umbrella
+          verbose: true
