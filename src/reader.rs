@@ -604,3 +604,1383 @@ impl MessageReader {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn create_reader() -> (MessageReader, Arc<EventDispatcher>) {
+        let dispatcher = Arc::new(EventDispatcher::new());
+        let reader = MessageReader::new(dispatcher.clone());
+        (reader, dispatcher)
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_empty() {
+        let (reader, _dispatcher) = create_reader();
+        let result = reader.handle_rx(vec![]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_ok() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        reader.handle_rx(vec![PacketType::Ok as u8]).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_error_with_message() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Error as u8];
+        data.extend_from_slice(b"Test error");
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Error);
+        match event.payload {
+            EventPayload::String(s) => assert_eq!(s, "Test error"),
+            _ => panic!("Expected String payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_error_empty() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        reader
+            .handle_rx(vec![PacketType::Error as u8])
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Error);
+        match event.payload {
+            EventPayload::String(s) => assert_eq!(s, "Unknown error"),
+            _ => panic!("Expected String payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_contact_start() {
+        let (reader, _dispatcher) = create_reader();
+
+        // Add some dummy contacts
+        reader.pending_contacts.write().await.push(Contact {
+            public_key: [0u8; 32],
+            contact_type: 1,
+            flags: 0,
+            path_len: 0,
+            out_path: vec![],
+            adv_name: "Old".to_string(),
+            last_advert: 0,
+            adv_lat: 0,
+            adv_lon: 0,
+            last_modification_timestamp: 0,
+        });
+
+        reader
+            .handle_rx(vec![PacketType::ContactStart as u8])
+            .await
+            .unwrap();
+
+        // Verify pending contacts were cleared
+        assert!(reader.pending_contacts.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_battery() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Battery as u8];
+        data.extend_from_slice(&85u16.to_le_bytes()); // level
+        data.extend_from_slice(&100u16.to_le_bytes()); // storage
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Battery);
+        match event.payload {
+            EventPayload::Battery(info) => {
+                assert_eq!(info.level, 85);
+                assert_eq!(info.storage, 100);
+            }
+            _ => panic!("Expected Battery payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_current_time() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::CurrentTime as u8];
+        data.extend_from_slice(&1234567890u32.to_le_bytes());
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::CurrentTime);
+        match event.payload {
+            EventPayload::Time(t) => assert_eq!(t, 1234567890),
+            _ => panic!("Expected Time payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_no_more_msgs() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        reader
+            .handle_rx(vec![PacketType::NoMoreMsgs as u8])
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::NoMoreMessages);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_contact_uri() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::ContactUri as u8];
+        data.extend_from_slice(b"meshcore://contact/abc123");
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::ContactUri);
+        match event.payload {
+            EventPayload::String(s) => assert_eq!(s, "meshcore://contact/abc123"),
+            _ => panic!("Expected String payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_private_key() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::PrivateKey as u8];
+        let key = [0xAA; 64];
+        data.extend_from_slice(&key);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::PrivateKey);
+        match event.payload {
+            EventPayload::PrivateKey(k) => assert_eq!(k, [0xAA; 64]),
+            _ => panic!("Expected PrivateKey payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_disabled() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Disabled as u8];
+        data.extend_from_slice(b"Feature disabled");
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Disabled);
+        match event.payload {
+            EventPayload::String(s) => assert_eq!(s, "Feature disabled"),
+            _ => panic!("Expected String payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_sign_start() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::SignStart as u8];
+        data.extend_from_slice(&1024u32.to_le_bytes());
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::SignStart);
+        match event.payload {
+            EventPayload::SignStart { max_length } => assert_eq!(max_length, 1024),
+            _ => panic!("Expected SignStart payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_signature() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Signature as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Signature);
+        match event.payload {
+            EventPayload::Signature(sig) => assert_eq!(sig, vec![0x01, 0x02, 0x03, 0x04]),
+            _ => panic!("Expected Signature payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_custom_vars() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::CustomVars as u8];
+        data.extend_from_slice(b"key1=value1\nkey2=value2");
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::CustomVars);
+        match event.payload {
+            EventPayload::CustomVars(vars) => {
+                assert_eq!(vars.get("key1"), Some(&"value1".to_string()));
+                assert_eq!(vars.get("key2"), Some(&"value2".to_string()));
+            }
+            _ => panic!("Expected CustomVars payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_msg_sent() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::MsgSent as u8];
+        data.push(1); // message_type
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]); // expected_ack
+        data.extend_from_slice(&5000u32.to_le_bytes()); // suggested_timeout
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::MsgSent);
+        match event.payload {
+            EventPayload::MsgSent(info) => {
+                assert_eq!(info.message_type, 1);
+                assert_eq!(info.expected_ack, [0xAA, 0xBB, 0xCC, 0xDD]);
+                assert_eq!(info.suggested_timeout, 5000);
+            }
+            _ => panic!("Expected MsgSent payload"),
+        }
+        assert_eq!(event.attributes.get("tag"), Some(&"aabbccdd".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_ack() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Ack as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Ack);
+        match event.payload {
+            EventPayload::Ack { tag } => assert_eq!(tag, [0x01, 0x02, 0x03, 0x04]),
+            _ => panic!("Expected Ack payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_messages_waiting() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        reader
+            .handle_rx(vec![PacketType::MessagesWaiting as u8])
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::MessagesWaiting);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_login_success() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        reader
+            .handle_rx(vec![PacketType::LoginSuccess as u8])
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::LoginSuccess);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_login_failed() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        reader
+            .handle_rx(vec![PacketType::LoginFailed as u8])
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::LoginFailed);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_stats_core() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Stats as u8];
+        data.push(0); // StatsCategory::Core
+        data.extend_from_slice(&[0x01, 0x02, 0x03]);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::StatsCore);
+        match event.payload {
+            EventPayload::Stats(stats) => {
+                assert_eq!(stats.category, StatsCategory::Core);
+                assert_eq!(stats.raw, vec![0x01, 0x02, 0x03]);
+            }
+            _ => panic!("Expected Stats payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_stats_radio() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Stats as u8];
+        data.push(1); // StatsCategory::Radio
+        data.extend_from_slice(&[0x04, 0x05]);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::StatsRadio);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_stats_packets() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Stats as u8];
+        data.push(2); // StatsCategory::Packets
+        data.extend_from_slice(&[0x06, 0x07]);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::StatsPackets);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_autoadd_config() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let data = vec![PacketType::AutoaddConfig as u8, 0x03];
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::AutoAddConfig);
+        match event.payload {
+            EventPayload::AutoAddConfig { flags } => assert_eq!(flags, 0x03),
+            _ => panic!("Expected AutoAddConfig payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_device_info() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::DeviceInfo as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::DeviceInfo);
+        match event.payload {
+            EventPayload::DeviceInfo(info) => {
+                assert_eq!(info.raw, vec![0x01, 0x02, 0x03, 0x04]);
+            }
+            _ => panic!("Expected DeviceInfo payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_path_update() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::PathUpdate as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // prefix
+        data.push(3); // path_len
+        data.extend_from_slice(&[0x0A, 0x0B, 0x0C]); // path
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::PathUpdate);
+        match event.payload {
+            EventPayload::PathUpdate(update) => {
+                assert_eq!(update.prefix, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+                assert_eq!(update.path_len, 3);
+                assert_eq!(update.path, vec![0x0A, 0x0B, 0x0C]);
+            }
+            _ => panic!("Expected PathUpdate payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_telemetry_response() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::TelemetryResponse as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // tag
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // telemetry data
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::TelemetryResponse);
+        match event.payload {
+            EventPayload::Telemetry(data) => assert_eq!(data, vec![0xAA, 0xBB, 0xCC]),
+            _ => panic!("Expected Telemetry payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_trace_data() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::TraceData as u8];
+        // Hop 1: 6 bytes prefix + 1 byte snr
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        data.push(40); // snr = 10.0
+        // Hop 2
+        data.extend_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16]);
+        data.push(20); // snr = 5.0
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::TraceData);
+        match event.payload {
+            EventPayload::TraceData(info) => {
+                assert_eq!(info.hops.len(), 2);
+                assert_eq!(info.hops[0].snr, 10.0);
+                assert_eq!(info.hops[1].snr, 5.0);
+            }
+            _ => panic!("Expected TraceData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_unknown() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let data = vec![0xFE, 0x01, 0x02, 0x03];
+
+        reader.handle_rx(data.clone()).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Unknown);
+        match event.payload {
+            EventPayload::Bytes(d) => assert_eq!(d, data),
+            _ => panic!("Expected Bytes payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_register_binary_request() {
+        let (reader, _dispatcher) = create_reader();
+
+        reader
+            .register_binary_request(
+                &[0x01, 0x02, 0x03, 0x04],
+                BinaryReqType::Status,
+                vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+                Duration::from_secs(30),
+                HashMap::new(),
+                false,
+            )
+            .await;
+
+        let requests = reader.pending_requests.read().await;
+        assert!(requests.contains_key("01020304"));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_expired() {
+        let (reader, _dispatcher) = create_reader();
+
+        // Register a request with immediate expiration
+        reader
+            .register_binary_request(
+                &[0x01, 0x02, 0x03, 0x04],
+                BinaryReqType::Status,
+                vec![],
+                Duration::from_millis(1),
+                HashMap::new(),
+                false,
+            )
+            .await;
+
+        // Wait for expiration
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Trigger cleanup
+        reader.cleanup_expired().await;
+
+        let requests = reader.pending_requests.read().await;
+        assert!(requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_binary_response_with_pending_request() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Register a pending request
+        reader
+            .register_binary_request(
+                &[0x01, 0x02, 0x03, 0x04],
+                BinaryReqType::Telemetry,
+                vec![],
+                Duration::from_secs(30),
+                HashMap::new(),
+                false,
+            )
+            .await;
+
+        let mut data = vec![PacketType::BinaryResponse as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // telemetry data
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Should emit TelemetryResponse due to the pending request type
+        assert_eq!(event.event_type, EventType::TelemetryResponse);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_binary_response_no_pending() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::BinaryResponse as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // tag
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // data
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Should emit generic BinaryResponse
+        assert_eq!(event.event_type, EventType::BinaryResponse);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_channel_info() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::ChannelInfo as u8];
+        data.push(1); // channel_idx
+        let mut name = [0u8; 16];
+        name[..7].copy_from_slice(b"General");
+        data.extend_from_slice(&name);
+        data.extend_from_slice(&[0xAA; 16]); // secret
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::ChannelInfo);
+        match event.payload {
+            EventPayload::ChannelInfo(info) => {
+                assert_eq!(info.channel_idx, 1);
+                assert_eq!(info.name, "General");
+                assert_eq!(info.secret, [0xAA; 16]);
+            }
+            _ => panic!("Expected ChannelInfo payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_channel_info_no_secret() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::ChannelInfo as u8];
+        data.push(2); // channel_idx
+        let mut name = [0u8; 17]; // 17 bytes to meet the 18-byte minimum (1 idx + 17 name)
+        name[..4].copy_from_slice(b"Test");
+        data.extend_from_slice(&name);
+        // No secret provided - payload is exactly 18 bytes
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::ChannelInfo);
+        match event.payload {
+            EventPayload::ChannelInfo(info) => {
+                assert_eq!(info.channel_idx, 2);
+                assert_eq!(info.secret, [0; 16]); // default to zeros when not provided
+            }
+            _ => panic!("Expected ChannelInfo payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_advertisement() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Advertisement as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // prefix
+        // name (32 bytes padded)
+        let mut name_bytes = [0u8; 32];
+        name_bytes[..5].copy_from_slice(b"Node1");
+        data.extend_from_slice(&name_bytes);
+        // lat at offset 38
+        data.extend_from_slice(&37774900i32.to_le_bytes());
+        // lon at offset 42
+        data.extend_from_slice(&(-122419400i32).to_le_bytes());
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Advertisement);
+        match event.payload {
+            EventPayload::Advertisement(adv) => {
+                assert_eq!(adv.prefix, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+                assert_eq!(adv.name, "Node1");
+                assert_eq!(adv.lat, 37774900);
+                assert_eq!(adv.lon, -122419400);
+            }
+            _ => panic!("Expected Advertisement payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_advertisement_minimal() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::Advertisement as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // prefix
+        // Just 8 bytes for name (minimal)
+        data.extend_from_slice(b"ShortNam");
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Advertisement);
+        match event.payload {
+            EventPayload::Advertisement(adv) => {
+                assert_eq!(adv.lat, 0); // default when not present
+                assert_eq!(adv.lon, 0);
+            }
+            _ => panic!("Expected Advertisement payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_self_info() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::SelfInfo as u8];
+        // Create a minimal valid self_info buffer (52+ bytes)
+        let mut payload = vec![0u8; 60];
+        payload[0] = 1; // adv_type
+        payload[1] = 20; // tx_power
+        payload[2] = 30; // max_tx_power
+        payload[35..39].copy_from_slice(&37774900i32.to_le_bytes()); // adv_lat
+        payload[39..43].copy_from_slice(&(-122419400i32).to_le_bytes()); // adv_lon
+        payload[47..51].copy_from_slice(&915000000u32.to_le_bytes()); // radio_freq
+        payload[51..55].copy_from_slice(&125000u32.to_le_bytes()); // radio_bw
+        payload[55] = 7; // sf
+        payload[56] = 5; // cr
+        payload[57..60].copy_from_slice(b"Dev");
+        data.extend_from_slice(&payload);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::SelfInfo);
+        match event.payload {
+            EventPayload::SelfInfo(info) => {
+                assert_eq!(info.tx_power, 20);
+                assert_eq!(info.radio_freq, 915000000);
+            }
+            _ => panic!("Expected SelfInfo payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_contact_msg_recv() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::ContactMsgRecv as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // sender_prefix
+        data.push(2); // path_len
+        data.push(1); // txt_type
+        data.extend_from_slice(&1234567890u32.to_le_bytes()); // sender_timestamp
+        data.extend_from_slice(b"Hello!"); // text
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::ContactMsgRecv);
+        match event.payload {
+            EventPayload::Message(msg) => {
+                assert_eq!(msg.text, "Hello!");
+                assert_eq!(msg.path_len, 2);
+            }
+            _ => panic!("Expected Message payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_contact_msg_recv_v3() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::ContactMsgRecvV3 as u8];
+        data.push(40); // snr_raw = 40 means SNR = 10.0
+        data.extend_from_slice(&[0x00, 0x00]); // reserved
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // sender_prefix
+        data.push(3); // path_len
+        data.push(1); // txt_type
+        data.extend_from_slice(&1234567890u32.to_le_bytes()); // sender_timestamp
+        data.extend_from_slice(b"V3 msg!"); // text
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::ContactMsgRecv);
+        match event.payload {
+            EventPayload::Message(msg) => {
+                assert_eq!(msg.text, "V3 msg!");
+                assert_eq!(msg.snr, Some(10.0));
+            }
+            _ => panic!("Expected Message payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_channel_msg_recv() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::ChannelMsgRecv as u8];
+        data.push(5); // channel
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // sender_prefix
+        data.push(1); // path_len
+        data.push(0); // txt_type
+        data.extend_from_slice(&1234567890u32.to_le_bytes()); // sender_timestamp
+        data.extend_from_slice(b"Channel msg"); // text
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::ChannelMsgRecv);
+        match event.payload {
+            EventPayload::Message(msg) => {
+                assert_eq!(msg.channel, Some(5));
+                assert_eq!(msg.text, "Channel msg");
+            }
+            _ => panic!("Expected Message payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_status_response() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::StatusResponse as u8];
+        // sender_prefix (6 bytes)
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        // status data (52 bytes)
+        let mut status_data = vec![0u8; 52];
+        status_data[0..2].copy_from_slice(&85u16.to_le_bytes()); // battery
+        status_data[2..4].copy_from_slice(&5u16.to_le_bytes()); // tx_queue_len
+        status_data[20..24].copy_from_slice(&86400u32.to_le_bytes()); // uptime
+        data.extend_from_slice(&status_data);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::StatusResponse);
+        match event.payload {
+            EventPayload::Status(status) => {
+                assert_eq!(status.battery, 85);
+                assert_eq!(status.uptime, 86400);
+            }
+            _ => panic!("Expected Status payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_new_contact() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::PushCodeNewAdvert as u8];
+        // Create a minimal valid contact buffer (145+ bytes)
+        let mut contact_data = vec![0u8; 149];
+        contact_data[0..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        contact_data[32] = 1; // contact_type
+        contact_data[99..104].copy_from_slice(b"New\0\0");
+        data.extend_from_slice(&contact_data);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::NewContact);
+        match event.payload {
+            EventPayload::Contact(contact) => {
+                assert_eq!(contact.adv_name, "New");
+            }
+            _ => panic!("Expected Contact payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_contact_list_flow() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Start contact list
+        reader
+            .handle_rx(vec![PacketType::ContactStart as u8])
+            .await
+            .unwrap();
+
+        // Add a contact
+        let mut contact_data = vec![PacketType::Contact as u8];
+        let mut contact = vec![0u8; 149];
+        contact[0..6].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        contact[32] = 1;
+        contact[99..105].copy_from_slice(b"Test1\0");
+        contact_data.extend_from_slice(&contact);
+        reader.handle_rx(contact_data).await.unwrap();
+
+        // End contact list
+        let mut end_data = vec![PacketType::ContactEnd as u8];
+        end_data.extend_from_slice(&999u32.to_le_bytes());
+        reader.handle_rx(end_data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Contacts);
+        match event.payload {
+            EventPayload::Contacts(contacts) => {
+                assert_eq!(contacts.len(), 1);
+                assert_eq!(contacts[0].adv_name, "Test1");
+            }
+            _ => panic!("Expected Contacts payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_binary_response_acl() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Register a pending ACL request
+        reader
+            .register_binary_request(
+                &[0x01, 0x02, 0x03, 0x04],
+                BinaryReqType::Acl,
+                vec![],
+                Duration::from_secs(30),
+                HashMap::new(),
+                false,
+            )
+            .await;
+
+        let mut data = vec![PacketType::BinaryResponse as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
+        // ACL entry data (7 bytes per entry)
+        data.extend_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x01]);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::AclResponse);
+        match event.payload {
+            EventPayload::Acl(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].permissions, 0x01);
+            }
+            _ => panic!("Expected Acl payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_binary_response_mma() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Register a pending MMA request
+        reader
+            .register_binary_request(
+                &[0x01, 0x02, 0x03, 0x04],
+                BinaryReqType::Mma,
+                vec![],
+                Duration::from_secs(30),
+                HashMap::new(),
+                false,
+            )
+            .await;
+
+        let mut data = vec![PacketType::BinaryResponse as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
+        // MMA entry (14 bytes)
+        data.push(1); // channel
+        data.push(2); // entry_type
+        data.extend_from_slice(&100i32.to_le_bytes()); // min
+        data.extend_from_slice(&200i32.to_le_bytes()); // max
+        data.extend_from_slice(&150i32.to_le_bytes()); // avg
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::MmaResponse);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_binary_response_neighbours() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Register a pending Neighbours request
+        reader
+            .register_binary_request(
+                &[0x01, 0x02, 0x03, 0x04],
+                BinaryReqType::Neighbours,
+                vec![],
+                Duration::from_secs(30),
+                HashMap::new(),
+                false,
+            )
+            .await;
+
+        let mut data = vec![PacketType::BinaryResponse as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
+        // Neighbours data
+        data.extend_from_slice(&1u16.to_le_bytes()); // total
+        data.extend_from_slice(&1u16.to_le_bytes()); // count
+        // Entry: pubkey (6) + secs_ago (4) + snr (1)
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        data.extend_from_slice(&300i32.to_le_bytes());
+        data.push(40); // snr
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::NeighboursResponse);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_binary_response_status() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Register a pending Status request
+        reader
+            .register_binary_request(
+                &[0x01, 0x02, 0x03, 0x04],
+                BinaryReqType::Status,
+                vec![],
+                Duration::from_secs(30),
+                HashMap::new(),
+                false,
+            )
+            .await;
+
+        let mut data = vec![PacketType::BinaryResponse as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
+        // Status data (52 bytes)
+        let mut status_data = vec![0u8; 52];
+        status_data[0..2].copy_from_slice(&100u16.to_le_bytes());
+        data.extend_from_slice(&status_data);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::StatusResponse);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_binary_response_keepalive() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Register a pending KeepAlive request
+        reader
+            .register_binary_request(
+                &[0x01, 0x02, 0x03, 0x04],
+                BinaryReqType::KeepAlive,
+                vec![],
+                Duration::from_secs(30),
+                HashMap::new(),
+                false,
+            )
+            .await;
+
+        let mut data = vec![PacketType::BinaryResponse as u8];
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
+        data.extend_from_slice(&[0xAA, 0xBB]);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::BinaryResponse);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_control_data_discover_resp() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::ControlData as u8];
+        data.push(ControlType::NodeDiscoverResp as u8);
+        // Entry: 32 bytes pubkey + 32 bytes name
+        let mut entry = vec![0u8; 64];
+        entry[0..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        entry[32..37].copy_from_slice(b"Node1");
+        data.extend_from_slice(&entry);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::DiscoverResponse);
+        match event.payload {
+            EventPayload::DiscoverResponse(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].name, "Node1");
+            }
+            _ => panic!("Expected DiscoverResponse payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_control_data_other() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::ControlData as u8];
+        data.push(ControlType::NodeDiscoverReq as u8); // Not a response
+        data.extend_from_slice(&[0x01, 0x02, 0x03]);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::ControlData);
+        match event.payload {
+            EventPayload::Bytes(d) => {
+                assert_eq!(d[0], ControlType::NodeDiscoverReq as u8);
+            }
+            _ => panic!("Expected Bytes payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_advert_response() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::AdvertResponse as u8];
+        // tag (4) + pubkey (32) + adv_type (1) + node_name (32) + timestamp (4) + flags (1) = 74 bytes min
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // tag
+        data.extend_from_slice(&[0xAA; 32]); // pubkey
+        data.push(1); // adv_type
+        let mut name = [0u8; 32];
+        name[..5].copy_from_slice(b"Node1");
+        data.extend_from_slice(&name); // node_name (32 bytes)
+        data.extend_from_slice(&1234567890u32.to_le_bytes()); // timestamp
+        data.push(0x01); // flags
+        // lat/lon
+        data.extend_from_slice(&37774900i32.to_le_bytes());
+        data.extend_from_slice(&(-122419400i32).to_le_bytes());
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::AdvertResponse);
+        match event.payload {
+            EventPayload::AdvertResponse(resp) => {
+                assert_eq!(resp.tag, [0x01, 0x02, 0x03, 0x04]);
+                assert_eq!(resp.adv_type, 1);
+                assert_eq!(resp.node_name, "Node1");
+                assert_eq!(resp.lat, Some(37774900));
+            }
+            _ => panic!("Expected AdvertResponse payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_contact_end_with_timestamp() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Add a pending contact first
+        reader.pending_contacts.write().await.push(Contact {
+            public_key: [0u8; 32],
+            contact_type: 1,
+            flags: 0,
+            path_len: 0,
+            out_path: vec![],
+            adv_name: "Test".to_string(),
+            last_advert: 0,
+            adv_lat: 0,
+            adv_lon: 0,
+            last_modification_timestamp: 0,
+        });
+
+        let mut data = vec![PacketType::ContactEnd as u8];
+        data.extend_from_slice(&1234567890u32.to_le_bytes());
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::Contacts);
+        assert_eq!(
+            event.attributes.get("lastmod"),
+            Some(&"1234567890".to_string())
+        );
+        match event.payload {
+            EventPayload::Contacts(contacts) => assert_eq!(contacts.len(), 1),
+            _ => panic!("Expected Contacts payload"),
+        }
+    }
+}

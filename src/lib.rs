@@ -6,10 +6,10 @@
 //! # Serial Example
 //!
 //! ```no_run
-//! use meshcore::MeshCore;
+//! use meshcore_rs::MeshCore;
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), meshcore::Error> {
+//! async fn main() -> Result<(), meshcore_rs::Error> {
 //!     // Connect via serial
 //!     let meshcore = MeshCore::serial("/dev/ttyUSB0", 115200).await?;
 //!
@@ -31,10 +31,10 @@
 //! Requires the `ble` feature.
 //!
 //! ```no_run
-//! use meshcore::MeshCore;
+//! use meshcore_rs::MeshCore;
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<(), meshcore::Error> {
+//! async fn main() -> Result<(), meshcore_rs::Error> {
 //!     // Connect via BLE (scans for any MeshCore device)
 //!     let meshcore = MeshCore::ble(None).await?;
 //!

@@ -201,3 +201,138 @@ pub const BLE_RX_CHAR_UUID: &str = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
 
 /// BLE TX Characteristic UUID (for reading from device)
 pub const BLE_TX_CHAR_UUID: &str = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_packet_type_from_u8_command_responses() {
+        assert_eq!(PacketType::from(0), PacketType::Ok);
+        assert_eq!(PacketType::from(1), PacketType::Error);
+        assert_eq!(PacketType::from(2), PacketType::ContactStart);
+        assert_eq!(PacketType::from(3), PacketType::Contact);
+        assert_eq!(PacketType::from(4), PacketType::ContactEnd);
+        assert_eq!(PacketType::from(5), PacketType::SelfInfo);
+        assert_eq!(PacketType::from(6), PacketType::MsgSent);
+        assert_eq!(PacketType::from(7), PacketType::ContactMsgRecv);
+        assert_eq!(PacketType::from(8), PacketType::ChannelMsgRecv);
+        assert_eq!(PacketType::from(9), PacketType::CurrentTime);
+        assert_eq!(PacketType::from(10), PacketType::NoMoreMsgs);
+        assert_eq!(PacketType::from(11), PacketType::ContactUri);
+        assert_eq!(PacketType::from(12), PacketType::Battery);
+        assert_eq!(PacketType::from(13), PacketType::DeviceInfo);
+        assert_eq!(PacketType::from(14), PacketType::PrivateKey);
+        assert_eq!(PacketType::from(15), PacketType::Disabled);
+        assert_eq!(PacketType::from(16), PacketType::ContactMsgRecvV3);
+        assert_eq!(PacketType::from(17), PacketType::ChannelMsgRecvV3);
+        assert_eq!(PacketType::from(18), PacketType::ChannelInfo);
+        assert_eq!(PacketType::from(19), PacketType::SignStart);
+        assert_eq!(PacketType::from(20), PacketType::Signature);
+        assert_eq!(PacketType::from(21), PacketType::CustomVars);
+        assert_eq!(PacketType::from(24), PacketType::Stats);
+        assert_eq!(PacketType::from(25), PacketType::AutoaddConfig);
+    }
+
+    #[test]
+    fn test_packet_type_from_u8_binary_control() {
+        assert_eq!(PacketType::from(50), PacketType::BinaryReq);
+        assert_eq!(PacketType::from(51), PacketType::FactoryReset);
+        assert_eq!(PacketType::from(52), PacketType::PathDiscovery);
+        assert_eq!(PacketType::from(54), PacketType::SetFloodScope);
+        assert_eq!(PacketType::from(55), PacketType::SendControlData);
+    }
+
+    #[test]
+    fn test_packet_type_from_u8_push_notifications() {
+        assert_eq!(PacketType::from(0x80), PacketType::Advertisement);
+        assert_eq!(PacketType::from(0x81), PacketType::PathUpdate);
+        assert_eq!(PacketType::from(0x82), PacketType::Ack);
+        assert_eq!(PacketType::from(0x83), PacketType::MessagesWaiting);
+        assert_eq!(PacketType::from(0x84), PacketType::RawData);
+        assert_eq!(PacketType::from(0x85), PacketType::LoginSuccess);
+        assert_eq!(PacketType::from(0x86), PacketType::LoginFailed);
+        assert_eq!(PacketType::from(0x87), PacketType::StatusResponse);
+        assert_eq!(PacketType::from(0x88), PacketType::LogData);
+        assert_eq!(PacketType::from(0x89), PacketType::TraceData);
+        assert_eq!(PacketType::from(0x8A), PacketType::PushCodeNewAdvert);
+        assert_eq!(PacketType::from(0x8B), PacketType::TelemetryResponse);
+        assert_eq!(PacketType::from(0x8C), PacketType::BinaryResponse);
+        assert_eq!(PacketType::from(0x8D), PacketType::PathDiscoveryResponse);
+        assert_eq!(PacketType::from(0x8E), PacketType::ControlData);
+        assert_eq!(PacketType::from(0x8F), PacketType::AdvertResponse);
+    }
+
+    #[test]
+    fn test_packet_type_unknown() {
+        assert_eq!(PacketType::from(99), PacketType::Unknown);
+        assert_eq!(PacketType::from(0xFF), PacketType::Unknown);
+        assert_eq!(PacketType::from(100), PacketType::Unknown);
+    }
+
+    #[test]
+    fn test_binary_req_type_from_u8() {
+        assert_eq!(BinaryReqType::from(0x01), BinaryReqType::Status);
+        assert_eq!(BinaryReqType::from(0x02), BinaryReqType::KeepAlive);
+        assert_eq!(BinaryReqType::from(0x03), BinaryReqType::Telemetry);
+        assert_eq!(BinaryReqType::from(0x04), BinaryReqType::Mma);
+        assert_eq!(BinaryReqType::from(0x05), BinaryReqType::Acl);
+        assert_eq!(BinaryReqType::from(0x06), BinaryReqType::Neighbours);
+        // Unknown defaults to Status
+        assert_eq!(BinaryReqType::from(0xFF), BinaryReqType::Status);
+    }
+
+    #[test]
+    fn test_anon_req_type_from_u8() {
+        assert_eq!(AnonReqType::from(0x01), AnonReqType::Regions);
+        assert_eq!(AnonReqType::from(0x02), AnonReqType::Owner);
+        assert_eq!(AnonReqType::from(0x03), AnonReqType::Basic);
+        // Unknown defaults to Basic
+        assert_eq!(AnonReqType::from(0xFF), AnonReqType::Basic);
+    }
+
+    #[test]
+    fn test_control_type_from_u8() {
+        assert_eq!(ControlType::from(0x80), ControlType::NodeDiscoverReq);
+        assert_eq!(ControlType::from(0x90), ControlType::NodeDiscoverResp);
+        // Unknown defaults to NodeDiscoverReq
+        assert_eq!(ControlType::from(0xFF), ControlType::NodeDiscoverReq);
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(FRAME_START, 0x3c);
+        assert_eq!(DEFAULT_BAUD_RATE, 115200);
+        assert_eq!(BLE_SERVICE_UUID, "6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
+        assert_eq!(BLE_RX_CHAR_UUID, "6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
+        assert_eq!(BLE_TX_CHAR_UUID, "6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
+    }
+
+    #[test]
+    fn test_packet_type_repr() {
+        // Verify repr values match
+        assert_eq!(PacketType::Ok as u8, 0);
+        assert_eq!(PacketType::Error as u8, 1);
+        assert_eq!(PacketType::Advertisement as u8, 0x80);
+    }
+
+    #[test]
+    fn test_binary_req_type_repr() {
+        assert_eq!(BinaryReqType::Status as u8, 0x01);
+        assert_eq!(BinaryReqType::KeepAlive as u8, 0x02);
+        assert_eq!(BinaryReqType::Telemetry as u8, 0x03);
+    }
+
+    #[test]
+    fn test_packet_type_debug() {
+        let packet = PacketType::Ok;
+        assert_eq!(format!("{:?}", packet), "Ok");
+    }
+
+    #[test]
+    fn test_packet_type_clone_eq() {
+        let p1 = PacketType::SelfInfo;
+        let p2 = p1;
+        assert_eq!(p1, p2);
+    }
+}
