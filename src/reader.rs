@@ -1185,7 +1185,7 @@ mod tests {
         // Hop 1: 6 bytes prefix + 1 byte snr
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
         data.push(40); // snr = 10.0
-        // Hop 2
+                       // Hop 2
         data.extend_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16]);
         data.push(20); // snr = 5.0
 
@@ -1391,7 +1391,7 @@ mod tests {
 
         let mut data = vec![PacketType::Advertisement as u8];
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // prefix
-        // name (32 bytes padded)
+                                                                       // name (32 bytes padded)
         let mut name_bytes = [0u8; 32];
         name_bytes[..5].copy_from_slice(b"Node1");
         data.extend_from_slice(&name_bytes);
@@ -1426,7 +1426,7 @@ mod tests {
 
         let mut data = vec![PacketType::Advertisement as u8];
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // prefix
-        // Just 8 bytes for name (minimal)
+                                                                       // Just 8 bytes for name (minimal)
         data.extend_from_slice(b"ShortNam");
 
         reader.handle_rx(data).await.unwrap();
@@ -1693,7 +1693,7 @@ mod tests {
 
         let mut data = vec![PacketType::BinaryResponse as u8];
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
-        // ACL entry data (7 bytes per entry)
+                                                           // ACL entry data (7 bytes per entry)
         data.extend_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x01]);
 
         reader.handle_rx(data).await.unwrap();
@@ -1732,7 +1732,7 @@ mod tests {
 
         let mut data = vec![PacketType::BinaryResponse as u8];
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
-        // MMA entry (14 bytes)
+                                                           // MMA entry (14 bytes)
         data.push(1); // channel
         data.push(2); // entry_type
         data.extend_from_slice(&100i32.to_le_bytes()); // min
@@ -1768,10 +1768,10 @@ mod tests {
 
         let mut data = vec![PacketType::BinaryResponse as u8];
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
-        // Neighbours data
+                                                           // Neighbours data
         data.extend_from_slice(&1u16.to_le_bytes()); // total
         data.extend_from_slice(&1u16.to_le_bytes()); // count
-        // Entry: pubkey (6) + secs_ago (4) + snr (1)
+                                                     // Entry: pubkey (6) + secs_ago (4) + snr (1)
         data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
         data.extend_from_slice(&300i32.to_le_bytes());
         data.push(40); // snr
@@ -1805,7 +1805,7 @@ mod tests {
 
         let mut data = vec![PacketType::BinaryResponse as u8];
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
-        // Status data (52 bytes)
+                                                           // Status data (52 bytes)
         let mut status_data = vec![0u8; 52];
         status_data[0..2].copy_from_slice(&100u16.to_le_bytes());
         data.extend_from_slice(&status_data);
@@ -1921,7 +1921,7 @@ mod tests {
         data.extend_from_slice(&name); // node_name (32 bytes)
         data.extend_from_slice(&1234567890u32.to_le_bytes()); // timestamp
         data.push(0x01); // flags
-        // lat/lon
+                         // lat/lon
         data.extend_from_slice(&37774900i32.to_le_bytes());
         data.extend_from_slice(&(-122419400i32).to_le_bytes());
 

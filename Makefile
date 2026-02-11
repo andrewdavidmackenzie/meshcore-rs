@@ -1,4 +1,7 @@
-all: clippy udeps test features debug
+all: fmt clippy udeps test features debug
+
+fmt:
+	cargo fmt
 
 pr: checks tests
 

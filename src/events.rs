@@ -696,8 +696,7 @@ mod tests {
 
     #[test]
     fn test_event_matches_filters_match() {
-        let event = Event::new(EventType::Ok, EventPayload::None)
-            .with_attribute("tag", "abc123");
+        let event = Event::new(EventType::Ok, EventPayload::None).with_attribute("tag", "abc123");
 
         let mut filters = HashMap::new();
         filters.insert("tag".to_string(), "abc123".to_string());
@@ -706,8 +705,7 @@ mod tests {
 
     #[test]
     fn test_event_matches_filters_no_match() {
-        let event = Event::new(EventType::Ok, EventPayload::None)
-            .with_attribute("tag", "abc123");
+        let event = Event::new(EventType::Ok, EventPayload::None).with_attribute("tag", "abc123");
 
         let mut filters = HashMap::new();
         filters.insert("tag".to_string(), "xyz789".to_string());
@@ -978,7 +976,9 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
             // Then emit with correct filter
             dispatcher_clone
-                .emit(Event::new(EventType::Ack, EventPayload::None).with_attribute("tag", "correct"))
+                .emit(
+                    Event::new(EventType::Ack, EventPayload::None).with_attribute("tag", "correct"),
+                )
                 .await;
         });
 

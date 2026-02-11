@@ -285,8 +285,18 @@ impl CommandHandler {
         // Bytes 8+: app name
         let data = [
             CMD_APP_START,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
-            b'm', b'c', b'c', b'l', b'i', // app name
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00, // reserved
+            b'm',
+            b'c',
+            b'c',
+            b'l',
+            b'i', // app name
         ];
         let event = self.send(&data, EventType::SelfInfo).await?;
 
@@ -739,9 +749,9 @@ impl CommandHandler {
         req_type: BinaryReqType,
     ) -> Result<MsgSentInfo> {
         let dest: Destination = dest.into();
-        let pubkey = dest
-            .public_key()
-            .ok_or_else(|| Error::invalid_param("Binary request requires full 32-byte public key"))?;
+        let pubkey = dest.public_key().ok_or_else(|| {
+            Error::invalid_param("Binary request requires full 32-byte public key")
+        })?;
 
         let mut data = vec![CMD_SEND_BINARY_REQ];
         data.push(req_type as u8);

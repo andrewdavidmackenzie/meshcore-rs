@@ -2,9 +2,9 @@ name: Code Checks
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
   schedule: # Build every day at 5PM UTC
     - cron: '0 17 * * *'
 
