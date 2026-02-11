@@ -726,9 +726,3 @@ impl MeshCore {
         &self.reader
     }
 }
-
-impl Drop for MeshCore {
-    fn drop(&mut self) {
-        // Tasks will be aborted when the JoinHandles are dropped
-    }
-}

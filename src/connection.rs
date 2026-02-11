@@ -80,6 +80,6 @@ mod tests {
     #[test]
     fn test_frame_start_constant() {
         assert_eq!(FRAME_START, 0x3c);
-        assert_eq!(FRAME_START, '<' as u8);
+        assert_eq!(FRAME_START, b'<');
     }
 }
