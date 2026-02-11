@@ -55,7 +55,6 @@
 //! ```
 
 pub mod commands;
-pub mod connection;
 pub mod error;
 pub mod events;
 pub mod packets;
