@@ -16,11 +16,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("meshcore=debug".parse().unwrap()),
+                .add_directive("meshcore-rs=debug".parse().unwrap()),
         )
         .init();
 
-    // Get optional device name from command line
+    // Get the optional device name from the command line
     let device_name = env::args().nth(1);
 
     match &device_name {
