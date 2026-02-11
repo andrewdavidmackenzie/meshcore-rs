@@ -1,13 +1,5 @@
 //! Main MeshCore client implementation
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-#[cfg(any(feature = "serial", feature = "ble", feature = "tcp"))]
-use tokio::sync::mpsc;
-use tokio::sync::{Mutex, RwLock};
-#[cfg(feature = "ble")]
-use uuid::Uuid;
 use crate::commands::CommandHandler;
 #[cfg(any(feature = "serial", feature = "tcp"))]
 use crate::connection::frame_packet;
@@ -16,6 +8,14 @@ use crate::reader::MessageReader;
 #[cfg(any(feature = "serial", feature = "ble", feature = "tcp"))]
 use crate::Error;
 use crate::Result;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+#[cfg(any(feature = "serial", feature = "ble", feature = "tcp"))]
+use tokio::sync::mpsc;
+use tokio::sync::{Mutex, RwLock};
+#[cfg(feature = "ble")]
+use uuid::Uuid;
 
 // MeshCore BLE service and characteristic UUIDs
 // These are the standard UUIDs used by MeshCore devices

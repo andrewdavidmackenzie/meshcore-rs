@@ -683,7 +683,7 @@ mod tests {
         data[0] = 1; // adv_type
         data[1] = 20; // tx_power
         data[2] = 30; // max_tx_power
-        // public_key at 3
+                      // public_key at 3
         data[3..6].copy_from_slice(&[0xAA, 0xBB, 0xCC]);
         // adv_lat at 35
         data[35..39].copy_from_slice(&37774900i32.to_le_bytes());
@@ -693,13 +693,13 @@ mod tests {
         data[44] = 1; // adv_loc_policy
         data[45] = 0b00_01_10_11; // telemetry modes packed
         data[46] = 1; // manual_add_contacts
-        // radio_freq at 47
+                      // radio_freq at 47
         data[47..51].copy_from_slice(&915000000u32.to_le_bytes());
         // radio_bw at 51
         data[51..55].copy_from_slice(&125000u32.to_le_bytes());
         data[55] = 7; // sf
         data[56] = 5; // cr
-        // name at 57
+                      // name at 57
         data[57..60].copy_from_slice(b"Dev");
 
         let info = parse_self_info(&data).unwrap();
@@ -749,7 +749,7 @@ mod tests {
         data[28..32].copy_from_slice(&400u32.to_le_bytes());
         // snr at 32 (raw, multiplied by 4)
         data[32] = 40; // SNR = 10.0
-        // dup_count at 36
+                       // dup_count at 36
         data[36..40].copy_from_slice(&10u32.to_le_bytes());
         // rx_airtime at 40
         data[40..44].copy_from_slice(&1800000u32.to_le_bytes());
@@ -781,7 +781,7 @@ mod tests {
         data[0..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
         data[6] = 2; // path_len
         data[7] = 1; // txt_type
-        // sender_timestamp at 8
+                     // sender_timestamp at 8
         data[8..12].copy_from_slice(&1234567890u32.to_le_bytes());
         // text at 12
         data[12..20].copy_from_slice(b"Hi there");
@@ -823,12 +823,12 @@ mod tests {
     fn test_parse_contact_msg_v3() {
         let mut data = vec![0u8; 23];
         data[0] = 40; // snr_raw = 40, SNR = 10.0
-        // reserved bytes at 1-2
-        // sender_prefix at 3
+                      // reserved bytes at 1-2
+                      // sender_prefix at 3
         data[3..9].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
         data[9] = 3; // path_len
         data[10] = 1; // txt_type
-        // sender_timestamp at 11
+                      // sender_timestamp at 11
         data[11..15].copy_from_slice(&1234567890u32.to_le_bytes());
         // text at 15
         data[15..23].copy_from_slice(b"V3 msg!!");
@@ -871,10 +871,10 @@ mod tests {
     #[test]
     fn test_parse_acl() {
         let mut data = vec![0u8; 21]; // 3 entries
-        // Entry 1
+                                      // Entry 1
         data[0..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
         data[6] = 0x01; // permissions
-        // Entry 2
+                        // Entry 2
         data[7..13].copy_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16]);
         data[13] = 0x02;
         // Entry 3
@@ -909,7 +909,10 @@ mod tests {
         let result = parse_neighbours(&data, 6).unwrap();
         assert_eq!(result.total, 10);
         assert_eq!(result.neighbours.len(), 1);
-        assert_eq!(result.neighbours[0].pubkey, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        assert_eq!(
+            result.neighbours[0].pubkey,
+            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06]
+        );
         assert_eq!(result.neighbours[0].secs_ago, 300);
         assert_eq!(result.neighbours[0].snr, 10.0);
     }
@@ -923,13 +926,13 @@ mod tests {
     #[test]
     fn test_parse_mma() {
         let mut data = vec![0u8; 28]; // 2 entries
-        // Entry 1
+                                      // Entry 1
         data[0] = 1; // channel
         data[1] = 2; // entry_type
         data[2..6].copy_from_slice(&100i32.to_le_bytes()); // min
         data[6..10].copy_from_slice(&200i32.to_le_bytes()); // max
         data[10..14].copy_from_slice(&150i32.to_le_bytes()); // avg
-        // Entry 2
+                                                             // Entry 2
         data[14] = 2;
         data[15] = 3;
         data[16..20].copy_from_slice(&50i32.to_le_bytes());
