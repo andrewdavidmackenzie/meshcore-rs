@@ -1207,7 +1207,11 @@ mod tests {
 
     // ========== CommandHandler Tests with Mock Infrastructure ==========
 
-    fn create_test_handler() -> (CommandHandler, mpsc::Receiver<Vec<u8>>, Arc<EventDispatcher>) {
+    fn create_test_handler() -> (
+        CommandHandler,
+        mpsc::Receiver<Vec<u8>>,
+        Arc<EventDispatcher>,
+    ) {
         let (sender, receiver) = mpsc::channel(16);
         let dispatcher = Arc::new(EventDispatcher::new());
         let reader = Arc::new(MessageReader::new(dispatcher.clone()));
@@ -1233,9 +1237,7 @@ mod tests {
         let (handler, mut rx, _dispatcher) = create_test_handler();
 
         // Spawn a task to receive the sent data
-        let recv_task = tokio::spawn(async move {
-            rx.recv().await
-        });
+        let recv_task = tokio::spawn(async move { rx.recv().await });
 
         // Send with a short timeout - should timeout since no response comes
         let result = handler
@@ -1309,7 +1311,10 @@ mod tests {
         });
 
         let result = handler
-            .wait_for_any_event(&[EventType::Ok, EventType::Error], Duration::from_millis(100))
+            .wait_for_any_event(
+                &[EventType::Ok, EventType::Error],
+                Duration::from_millis(100),
+            )
             .await;
 
         assert!(result.is_ok());
@@ -1321,7 +1326,10 @@ mod tests {
         let (handler, _rx, _dispatcher) = create_test_handler();
 
         let result = handler
-            .wait_for_any_event(&[EventType::Ok, EventType::Error], Duration::from_millis(10))
+            .wait_for_any_event(
+                &[EventType::Ok, EventType::Error],
+                Duration::from_millis(10),
+            )
             .await;
 
         assert!(result.is_err());
@@ -1382,7 +1390,10 @@ mod tests {
                 name: "TestDevice".to_string(),
             };
             dispatcher_clone
-                .emit(Event::new(EventType::SelfInfo, EventPayload::SelfInfo(info)))
+                .emit(Event::new(
+                    EventType::SelfInfo,
+                    EventPayload::SelfInfo(info),
+                ))
                 .await;
         });
 
@@ -1427,7 +1438,10 @@ mod tests {
             assert_eq!(sent[0], CMD_GET_DEVICE_TIME);
 
             dispatcher_clone
-                .emit(Event::new(EventType::CurrentTime, EventPayload::Time(1234567890)))
+                .emit(Event::new(
+                    EventType::CurrentTime,
+                    EventPayload::Time(1234567890),
+                ))
                 .await;
         });
 
@@ -1545,9 +1559,7 @@ mod tests {
     async fn test_reboot() {
         let (handler, mut rx, _dispatcher) = create_test_handler();
 
-        let recv_task = tokio::spawn(async move {
-            rx.recv().await
-        });
+        let recv_task = tokio::spawn(async move { rx.recv().await });
 
         let result = handler.reboot().await;
         assert!(result.is_ok());
@@ -1579,7 +1591,10 @@ mod tests {
                 last_modification_timestamp: 0,
             }];
             dispatcher_clone
-                .emit(Event::new(EventType::Contacts, EventPayload::Contacts(contacts)))
+                .emit(Event::new(
+                    EventType::Contacts,
+                    EventPayload::Contacts(contacts),
+                ))
                 .await;
         });
 
@@ -1629,7 +1644,10 @@ mod tests {
                 secret: [0; 16],
             };
             dispatcher_clone
-                .emit(Event::new(EventType::ChannelInfo, EventPayload::ChannelInfo(info)))
+                .emit(Event::new(
+                    EventType::ChannelInfo,
+                    EventPayload::ChannelInfo(info),
+                ))
                 .await;
         });
 
@@ -1672,7 +1690,10 @@ mod tests {
             let mut vars = HashMap::new();
             vars.insert("key1".to_string(), "value1".to_string());
             dispatcher_clone
-                .emit(Event::new(EventType::CustomVars, EventPayload::CustomVars(vars)))
+                .emit(Event::new(
+                    EventType::CustomVars,
+                    EventPayload::CustomVars(vars),
+                ))
                 .await;
         });
 
@@ -1739,7 +1760,10 @@ mod tests {
                 channel: None,
             };
             dispatcher_clone
-                .emit(Event::new(EventType::ContactMsgRecv, EventPayload::Message(msg)))
+                .emit(Event::new(
+                    EventType::ContactMsgRecv,
+                    EventPayload::Message(msg),
+                ))
                 .await;
         });
 
