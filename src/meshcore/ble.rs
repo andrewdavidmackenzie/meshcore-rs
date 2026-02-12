@@ -185,7 +185,7 @@ impl MeshCore {
             .map_err(|e| Error::connection(format!("Failed to start BLE scan: {}", e)))?;
 
         let target_peripheral: Option<Peripheral> = {
-            let timeout = tokio::time::timeout(Duration::from_secs(1), async {
+            let timeout = tokio::time::timeout(Duration::from_secs(2), async {
                 while let Some(event) = events.next().await {
                     if let CentralEvent::DeviceDiscovered(id) = event {
                         if let Ok(peripheral) = adapter.peripheral(&id).await {
