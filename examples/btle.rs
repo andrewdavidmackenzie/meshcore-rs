@@ -29,7 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Connect via BLE
-    let meshcore = MeshCore::ble(device_name.as_deref()).await?;
+    let peripheral = MeshCore::ble_discover(device_name.as_deref()).await?;
+    let meshcore = MeshCore::ble(&peripheral).await?;
 
     println!("Connected via BLE!");
 
