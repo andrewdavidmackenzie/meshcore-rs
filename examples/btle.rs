@@ -6,7 +6,8 @@
 //! Usage:
 //!   cargo run --example btle
 
-use meshcore_rs::{EventType, MeshCore};
+use futures::StreamExt;
+use meshcore_rs::MeshCore;
 use std::time::Duration;
 
 #[tokio::main]
@@ -46,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .commands()
         .lock()
         .await
-        .get_contacts_with_timeout(0, std::time::Duration::from_secs(30))
+        .get_contacts_with_timeout(0, Duration::from_secs(30))
         .await?;
     println!("Found {} contacts:", contacts.len());
 
@@ -59,25 +60,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Subscribe to incoming messages
-    println!("\nListening for messages (press Ctrl+C to exit)...");
+    println!("\nStreaming events from the radio (press Ctrl+C to exit)...");
 
-    let _sub = meshcore
-        .subscribe(
-            EventType::ContactMsgRecv,
-            std::collections::HashMap::new(),
-            |event| {
-                if let meshcore_rs::events::EventPayload::Message(msg) = event.payload {
-                    println!(
-                        "Received message from {:02x?}: {}",
-                        msg.sender_prefix, msg.text
-                    );
-                }
-            },
-        )
-        .await;
-
-    // Start auto-fetching messages
-    meshcore.start_auto_message_fetching().await;
+    let mut stream = meshcore.event_stream();
+    while let Some(event) = stream.next().await {
+        println!("Received: {:?}", event.event_type);
+    }
 
     // Keep running until Ctrl+C
     tokio::signal::ctrl_c().await?;

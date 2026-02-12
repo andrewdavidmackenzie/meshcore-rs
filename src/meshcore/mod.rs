@@ -6,12 +6,14 @@ use crate::events::*;
 use crate::packets::FRAME_START;
 use crate::reader::MessageReader;
 use crate::Result;
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(any(feature = "serial", feature = "ble", feature = "tcp"))]
 use tokio::sync::mpsc;
 use tokio::sync::{Mutex, RwLock};
+use tokio_stream::wrappers::BroadcastStream;
 
 #[cfg(feature = "ble")]
 pub mod ble;
@@ -207,20 +209,20 @@ impl MeshCore {
         callback: F,
     ) -> Subscription
     where
-        F: Fn(Event) + Send + Sync + 'static,
+        F: Fn(MeshCoreEvent) + Send + Sync + 'static,
     {
         self.dispatcher
             .subscribe(event_type, filters, callback)
             .await
     }
 
-    /// Wait for a specific event
+    /// Wait for an event, either matching a specific [EventType] or all
     pub async fn wait_for_event(
         &self,
-        event_type: EventType,
+        event_type: Option<EventType>,
         filters: HashMap<String, String>,
         timeout: Duration,
-    ) -> Option<Event> {
+    ) -> Option<MeshCoreEvent> {
         self.dispatcher
             .wait_for_event(event_type, filters, timeout)
             .await
@@ -273,7 +275,10 @@ impl MeshCore {
 
         // Emit disconnected event
         self.dispatcher
-            .emit(Event::new(EventType::Disconnected, EventPayload::None))
+            .emit(MeshCoreEvent::new(
+                EventType::Disconnected,
+                EventPayload::None,
+            ))
             .await;
 
         Ok(())
@@ -292,6 +297,50 @@ impl MeshCore {
     /// Get the message reader
     pub fn reader(&self) -> &Arc<MessageReader> {
         &self.reader
+    }
+
+    /// Create a stream of all events
+    ///
+    /// Returns a stream that yields all events emitted by the device.
+    /// Use `StreamExt` methods to filter or process events.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use futures::StreamExt;
+    ///
+    /// let mut stream = meshcore.event_stream();
+    /// while let Some(event) = stream.next().await {
+    ///     println!("Received: {:?}", event.event_type);
+    /// }
+    /// ```
+    pub fn event_stream(&self) -> impl futures::Stream<Item = MeshCoreEvent> + Unpin {
+        BroadcastStream::new(self.dispatcher.receiver())
+            .filter_map(|result| std::future::ready(result.ok()))
+    }
+
+    /// Create a filtered stream of events by type
+    ///
+    /// Returns a stream that yields only events matching the specified type.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use futures::StreamExt;
+    /// use meshcore_rs::EventType;
+    ///
+    /// let mut stream = meshcore.event_stream_filtered(EventType::ContactMsgRecv);
+    /// while let Some(event) = stream.next().await {
+    ///     println!("Message received: {:?}", event.payload);
+    /// }
+    /// ```
+    pub fn event_stream_filtered(
+        &self,
+        event_type: EventType,
+    ) -> impl futures::Stream<Item = MeshCoreEvent> + Unpin {
+        BroadcastStream::new(self.dispatcher.receiver()).filter_map(move |result| {
+            std::future::ready(result.ok().filter(|event| event.event_type == event_type))
+        })
     }
 }
 

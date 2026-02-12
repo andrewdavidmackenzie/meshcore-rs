@@ -1,7 +1,7 @@
 use crate::events::EventPayload;
 use crate::meshcore::frame_packet;
 use crate::packets::FRAME_START;
-use crate::{Error, Event, EventType, MeshCore};
+use crate::{Error, EventType, MeshCore, MeshCoreEvent};
 use tokio::sync::mpsc;
 
 impl MeshCore {
@@ -47,7 +47,10 @@ impl MeshCore {
                         // Connection closed
                         *connected.write().await = false;
                         dispatcher
-                            .emit(Event::new(EventType::Disconnected, EventPayload::None))
+                            .emit(MeshCoreEvent::new(
+                                EventType::Disconnected,
+                                EventPayload::None,
+                            ))
                             .await;
                         break;
                     }
@@ -79,7 +82,10 @@ impl MeshCore {
                     Err(_) => {
                         *connected.write().await = false;
                         dispatcher
-                            .emit(Event::new(EventType::Disconnected, EventPayload::None))
+                            .emit(MeshCoreEvent::new(
+                                EventType::Disconnected,
+                                EventPayload::None,
+                            ))
                             .await;
                         break;
                     }

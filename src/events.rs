@@ -465,7 +465,7 @@ pub enum StatsCategory {
 
 /// An event emitted by the reader
 #[derive(Debug, Clone)]
-pub struct Event {
+pub struct MeshCoreEvent {
     /// Event type
     pub event_type: EventType,
     /// Event payload
@@ -474,7 +474,7 @@ pub struct Event {
     pub attributes: HashMap<String, String>,
 }
 
-impl Event {
+impl MeshCoreEvent {
     /// Create a new event
     pub fn new(event_type: EventType, payload: EventPayload) -> Self {
         Self {
@@ -525,7 +525,7 @@ impl Subscription {
 }
 
 /// Callback type for event subscriptions
-pub type EventCallback = Box<dyn Fn(Event) + Send + Sync>;
+pub type EventCallback = Box<dyn Fn(MeshCoreEvent) + Send + Sync>;
 
 struct SubscriptionEntry {
     id: u64,
@@ -538,7 +538,7 @@ struct SubscriptionEntry {
 pub struct EventDispatcher {
     subscriptions: Arc<RwLock<Vec<SubscriptionEntry>>>,
     next_id: AtomicU64,
-    broadcast_tx: broadcast::Sender<Event>,
+    broadcast_tx: broadcast::Sender<MeshCoreEvent>,
     unsubscribe_tx: mpsc::Sender<u64>,
     unsubscribe_rx: Arc<RwLock<mpsc::Receiver<u64>>>,
 }
@@ -566,7 +566,7 @@ impl EventDispatcher {
         callback: F,
     ) -> Subscription
     where
-        F: Fn(Event) + Send + Sync + 'static,
+        F: Fn(MeshCoreEvent) + Send + Sync + 'static,
     {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
@@ -587,7 +587,7 @@ impl EventDispatcher {
     }
 
     /// Emit an event to all matching subscribers
-    pub async fn emit(&self, event: Event) {
+    pub async fn emit(&self, event: MeshCoreEvent) {
         // Process any pending unsubscription events
         {
             let mut rx = self.unsubscribe_rx.write().await;
@@ -611,10 +611,10 @@ impl EventDispatcher {
     /// Wait for a specific event type with optional filters
     pub async fn wait_for_event(
         &self,
-        event_type: EventType,
+        event_type: Option<EventType>,
         filters: HashMap<String, String>,
         timeout: std::time::Duration,
-    ) -> Option<Event> {
+    ) -> Option<MeshCoreEvent> {
         let mut rx = self.broadcast_tx.subscribe();
 
         tokio::select! {
@@ -623,8 +623,17 @@ impl EventDispatcher {
                 loop {
                     match rx.recv().await {
                         Ok(event) => {
-                            if event.event_type == event_type && event.matches_filters(&filters) {
-                                return Some(event);
+                            match event_type {
+                                None => {
+                                    if event.matches_filters(&filters) {
+                                        return Some(event);
+                                    }
+                                }
+                                Some(event_type_filter) => {
+                                    if event.event_type == event_type_filter && event.matches_filters(&filters) {
+                                        return Some(event);
+                                    }
+                                }
                             }
                         }
                         Err(_) => return None,
@@ -635,7 +644,7 @@ impl EventDispatcher {
     }
 
     /// Get a broadcast receiver for events
-    pub fn receiver(&self) -> broadcast::Receiver<Event> {
+    pub fn receiver(&self) -> broadcast::Receiver<MeshCoreEvent> {
         self.broadcast_tx.subscribe()
     }
 }
@@ -654,7 +663,7 @@ mod tests {
 
     #[test]
     fn test_event_new() {
-        let event = Event::new(EventType::Ok, EventPayload::None);
+        let event = MeshCoreEvent::new(EventType::Ok, EventPayload::None);
         assert_eq!(event.event_type, EventType::Ok);
         assert!(matches!(event.payload, EventPayload::None));
         assert!(event.attributes.is_empty());
@@ -662,7 +671,7 @@ mod tests {
 
     #[test]
     fn test_event_with_attribute() {
-        let event = Event::new(EventType::Ok, EventPayload::None)
+        let event = MeshCoreEvent::new(EventType::Ok, EventPayload::None)
             .with_attribute("key1", "value1")
             .with_attribute("key2", "value2");
 
@@ -672,14 +681,14 @@ mod tests {
 
     #[test]
     fn test_event_ok() {
-        let event = Event::ok();
+        let event = MeshCoreEvent::ok();
         assert_eq!(event.event_type, EventType::Ok);
         assert!(matches!(event.payload, EventPayload::None));
     }
 
     #[test]
     fn test_event_error() {
-        let event = Event::error("test error");
+        let event = MeshCoreEvent::error("test error");
         assert_eq!(event.event_type, EventType::Error);
         match event.payload {
             EventPayload::String(s) => assert_eq!(s, "test error"),
@@ -689,14 +698,15 @@ mod tests {
 
     #[test]
     fn test_event_matches_filters_empty() {
-        let event = Event::new(EventType::Ok, EventPayload::None);
+        let event = MeshCoreEvent::new(EventType::Ok, EventPayload::None);
         let filters = HashMap::new();
         assert!(event.matches_filters(&filters));
     }
 
     #[test]
     fn test_event_matches_filters_match() {
-        let event = Event::new(EventType::Ok, EventPayload::None).with_attribute("tag", "abc123");
+        let event =
+            MeshCoreEvent::new(EventType::Ok, EventPayload::None).with_attribute("tag", "abc123");
 
         let mut filters = HashMap::new();
         filters.insert("tag".to_string(), "abc123".to_string());
@@ -705,7 +715,8 @@ mod tests {
 
     #[test]
     fn test_event_matches_filters_no_match() {
-        let event = Event::new(EventType::Ok, EventPayload::None).with_attribute("tag", "abc123");
+        let event =
+            MeshCoreEvent::new(EventType::Ok, EventPayload::None).with_attribute("tag", "abc123");
 
         let mut filters = HashMap::new();
         filters.insert("tag".to_string(), "xyz789".to_string());
@@ -714,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_event_matches_filters_missing_attr() {
-        let event = Event::new(EventType::Ok, EventPayload::None);
+        let event = MeshCoreEvent::new(EventType::Ok, EventPayload::None);
 
         let mut filters = HashMap::new();
         filters.insert("tag".to_string(), "abc123".to_string());
@@ -839,7 +850,7 @@ mod tests {
         let dispatcher = EventDispatcher::new();
         let mut receiver = dispatcher.receiver();
 
-        dispatcher.emit(Event::ok()).await;
+        dispatcher.emit(MeshCoreEvent::ok()).await;
 
         let received = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
             .await
@@ -861,7 +872,7 @@ mod tests {
             })
             .await;
 
-        dispatcher.emit(Event::ok()).await;
+        dispatcher.emit(MeshCoreEvent::ok()).await;
 
         // Give time for callback to execute
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -886,12 +897,18 @@ mod tests {
 
         // This should NOT trigger callback (wrong filter)
         dispatcher
-            .emit(Event::new(EventType::Ack, EventPayload::None).with_attribute("tag", "nomatch"))
+            .emit(
+                MeshCoreEvent::new(EventType::Ack, EventPayload::None)
+                    .with_attribute("tag", "nomatch"),
+            )
             .await;
 
-        // This SHOULD trigger callback
+        // This SHOULD trigger the callback
         dispatcher
-            .emit(Event::new(EventType::Ack, EventPayload::None).with_attribute("tag", "match"))
+            .emit(
+                MeshCoreEvent::new(EventType::Ack, EventPayload::None)
+                    .with_attribute("tag", "match"),
+            )
             .await;
 
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -912,19 +929,19 @@ mod tests {
             .await;
 
         // First emit should trigger
-        dispatcher.emit(Event::ok()).await;
+        dispatcher.emit(MeshCoreEvent::ok()).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
 
         // Unsubscribe
         subscription.unsubscribe().await;
 
-        // This emit should process unsubscription
-        dispatcher.emit(Event::ok()).await;
+        // This call to emit() should process unsubscription
+        dispatcher.emit(MeshCoreEvent::ok()).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         // Third emit should NOT trigger (unsubscribed)
-        dispatcher.emit(Event::ok()).await;
+        dispatcher.emit(MeshCoreEvent::ok()).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         // Should still be 2 (second emit counted, third did not)
@@ -939,11 +956,15 @@ mod tests {
         // Spawn a task that emits after a short delay
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            dispatcher_clone.emit(Event::ok()).await;
+            dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = dispatcher
-            .wait_for_event(EventType::Ok, HashMap::new(), Duration::from_millis(100))
+            .wait_for_event(
+                Some(EventType::Ok),
+                HashMap::new(),
+                Duration::from_millis(100),
+            )
             .await;
 
         assert!(result.is_some());
@@ -955,7 +976,11 @@ mod tests {
         let dispatcher = EventDispatcher::new();
 
         let result = dispatcher
-            .wait_for_event(EventType::Ok, HashMap::new(), Duration::from_millis(10))
+            .wait_for_event(
+                Some(EventType::Ok),
+                HashMap::new(),
+                Duration::from_millis(10),
+            )
             .await;
 
         assert!(result.is_none());
@@ -969,15 +994,19 @@ mod tests {
         // Spawn a task that emits events
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(5)).await;
-            // First, emit with wrong filter
-            dispatcher_clone
-                .emit(Event::new(EventType::Ack, EventPayload::None).with_attribute("tag", "wrong"))
-                .await;
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            // Then emit with correct filter
+            // First, emit with the wrong filter
             dispatcher_clone
                 .emit(
-                    Event::new(EventType::Ack, EventPayload::None).with_attribute("tag", "correct"),
+                    MeshCoreEvent::new(EventType::Ack, EventPayload::None)
+                        .with_attribute("tag", "wrong"),
+                )
+                .await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            // Then emit with the correct filter
+            dispatcher_clone
+                .emit(
+                    MeshCoreEvent::new(EventType::Ack, EventPayload::None)
+                        .with_attribute("tag", "correct"),
                 )
                 .await;
         });
@@ -986,7 +1015,7 @@ mod tests {
         filters.insert("tag".to_string(), "correct".to_string());
 
         let result = dispatcher
-            .wait_for_event(EventType::Ack, filters, Duration::from_millis(100))
+            .wait_for_event(Some(EventType::Ack), filters, Duration::from_millis(100))
             .await;
 
         assert!(result.is_some());
