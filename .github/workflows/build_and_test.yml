@@ -12,7 +12,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUSTFLAGS: -C instrument-coverage
-  LLVM_PROFILE_FILE: meshcore-%p-%m.profraw
+  LLVM_PROFILE_FILE: mod.rs-%p-%m.profraw
   RUST_BACKTRACE: 1
   GH_TOKEN: ${{ github.token }}
 

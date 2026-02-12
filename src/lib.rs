@@ -32,14 +32,16 @@
 //!
 //! ```no_run
 //! use meshcore_rs::MeshCore;
+//! use std::time::Duration;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), meshcore_rs::Error> {
-//!     // Connect via BLE (scans for any MeshCore device)
-//!     let meshcore = MeshCore::ble(None).await?;
+//!     // First discover available MeshCore devices
+//!     let devices = MeshCore::ble_discover(Duration::from_secs(5)).await?;
+//!     println!("Found devices: {:?}", devices);
 //!
-//!     // Or connect to a specific device by name
-//!     // let meshcore = MeshCore::ble(Some("MyDevice")).await?;
+//!     // Connect to a specific device by name
+//!     let meshcore = MeshCore::ble_connect("MyDevice").await?;
 //!
 //!     // Get device info
 //!     let info = meshcore.commands().lock().await.send_appstart().await?;

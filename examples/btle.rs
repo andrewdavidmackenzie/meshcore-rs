@@ -1,35 +1,27 @@
 //! Example showing how to connect to a MeshCore device via Bluetooth Low Energy (BLE)
 //!
 //! This example demonstrates connecting to a MeshCore device over BLE instead of serial.
-//! The device must be advertising the Nordic UART Service (NUS) which MeshCore uses.
+//! It will connect to the first MeshCore radio found
 //!
 //! Usage:
 //!   cargo run --example btle
-//!   cargo run --example btle -- "DeviceName"
 
 use meshcore_rs::{EventType, MeshCore};
-use std::env;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging with DEBUG level for meshcore
+    // Initialize logging with DEBUG level for mod.rs
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("meshcore-rs=debug".parse().unwrap()),
+                .add_directive("mod.rs-rs=debug".parse().unwrap()),
         )
         .init();
 
-    // Get the optional device name from the command line
-    let device_name = env::args().nth(1);
-
-    match &device_name {
-        Some(name) => println!("Scanning for MeshCore device '{}'...", name),
-        None => println!("Scanning for any MeshCore device..."),
-    }
-
     // Connect via BLE
-    let meshcore = MeshCore::ble(device_name.as_deref()).await?;
+    let radios = MeshCore::ble_discover(Duration::from_secs(4)).await?;
+    let meshcore = MeshCore::ble_connect(radios.get(0).unwrap()).await?;
 
     println!("Connected via BLE!");
 
