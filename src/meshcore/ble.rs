@@ -1,5 +1,5 @@
 use crate::events::EventPayload;
-use crate::{Error, Event, EventType, MeshCore};
+use crate::{Error, EventType, MeshCore, MeshCoreEvent};
 use btleplug::api::{
     Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
 };
@@ -253,7 +253,10 @@ impl MeshCore {
                 Err(_) => {
                     *connected.write().await = false;
                     dispatcher
-                        .emit(Event::new(EventType::Disconnected, EventPayload::None))
+                        .emit(MeshCoreEvent::new(
+                            EventType::Disconnected,
+                            EventPayload::None,
+                        ))
                         .await;
                     return;
                 }
@@ -280,7 +283,10 @@ impl MeshCore {
             // Notification stream ended - disconnected
             *connected.write().await = false;
             dispatcher
-                .emit(Event::new(EventType::Disconnected, EventPayload::None))
+                .emit(MeshCoreEvent::new(
+                    EventType::Disconnected,
+                    EventPayload::None,
+                ))
                 .await;
         });
 

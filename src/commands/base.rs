@@ -194,7 +194,11 @@ impl CommandHandler {
     }
 
     /// Send raw data and wait for a response
-    pub async fn send(&self, data: &[u8], expected_event: EventType) -> Result<Event> {
+    pub async fn send(
+        &self,
+        data: &[u8],
+        expected_event: Option<EventType>,
+    ) -> Result<MeshCoreEvent> {
         self.send_with_timeout(data, expected_event, self.default_timeout)
             .await
     }
@@ -203,9 +207,9 @@ impl CommandHandler {
     pub async fn send_with_timeout(
         &self,
         data: &[u8],
-        expected_event: EventType,
+        expected_event: Option<EventType>,
         timeout: Duration,
-    ) -> Result<Event> {
+    ) -> Result<MeshCoreEvent> {
         // Send the data
         self.sender
             .send(data.to_vec())
@@ -223,7 +227,7 @@ impl CommandHandler {
         data: &[u8],
         expected_events: &[EventType],
         timeout: Duration,
-    ) -> Result<Event> {
+    ) -> Result<MeshCoreEvent> {
         // Send the data
         self.sender
             .send(data.to_vec())
@@ -237,10 +241,10 @@ impl CommandHandler {
     /// Wait for a specific event
     pub async fn wait_for_event(
         &self,
-        event_type: EventType,
+        event_type: Option<EventType>,
         filters: HashMap<String, String>,
         timeout: Duration,
-    ) -> Result<Event> {
+    ) -> Result<MeshCoreEvent> {
         self.dispatcher
             .wait_for_event(event_type, filters, timeout)
             .await
@@ -252,7 +256,7 @@ impl CommandHandler {
         &self,
         event_types: &[EventType],
         timeout: Duration,
-    ) -> Result<Event> {
+    ) -> Result<MeshCoreEvent> {
         let mut rx = self.dispatcher.receiver();
 
         tokio::select! {
@@ -298,7 +302,7 @@ impl CommandHandler {
             b'l',
             b'i', // app name
         ];
-        let event = self.send(&data, EventType::SelfInfo).await?;
+        let event = self.send(&data, Some(EventType::SelfInfo)).await?;
 
         match event.payload {
             EventPayload::SelfInfo(info) => Ok(info),
@@ -312,7 +316,7 @@ impl CommandHandler {
     pub async fn send_device_query(&self) -> Result<DeviceInfoData> {
         // Protocol version 8 is the current version
         let data = [CMD_DEVICE_QUERY, 8];
-        let event = self.send(&data, EventType::DeviceInfo).await?;
+        let event = self.send(&data, Some(EventType::DeviceInfo)).await?;
 
         match event.payload {
             EventPayload::DeviceInfo(info) => Ok(info),
@@ -325,7 +329,7 @@ impl CommandHandler {
     /// Format: [CMD_GET_BATT_AND_STORAGE=0x14]
     pub async fn get_bat(&self) -> Result<BatteryInfo> {
         let data = [CMD_GET_BATT_AND_STORAGE];
-        let event = self.send(&data, EventType::Battery).await?;
+        let event = self.send(&data, Some(EventType::Battery)).await?;
 
         match event.payload {
             EventPayload::Battery(info) => Ok(info),
@@ -338,7 +342,7 @@ impl CommandHandler {
     /// Format: [CMD_GET_DEVICE_TIME=0x05]
     pub async fn get_time(&self) -> Result<u32> {
         let data = [CMD_GET_DEVICE_TIME];
-        let event = self.send(&data, EventType::CurrentTime).await?;
+        let event = self.send(&data, Some(EventType::CurrentTime)).await?;
 
         match event.payload {
             EventPayload::Time(t) => Ok(t),
@@ -352,7 +356,7 @@ impl CommandHandler {
     pub async fn set_time(&self, timestamp: u32) -> Result<()> {
         let mut data = vec![CMD_SET_DEVICE_TIME];
         data.extend_from_slice(&timestamp.to_le_bytes());
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -362,7 +366,7 @@ impl CommandHandler {
     pub async fn set_name(&self, name: &str) -> Result<()> {
         let mut data = vec![CMD_SET_ADVERT_NAME];
         data.extend_from_slice(name.as_bytes());
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -377,7 +381,7 @@ impl CommandHandler {
         data.extend_from_slice(&lat_micro.to_le_bytes());
         data.extend_from_slice(&lon_micro.to_le_bytes());
         // Alt is optional, firmware handles len >= 9
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -386,7 +390,7 @@ impl CommandHandler {
     /// Format: [CMD_SET_RADIO_TX_POWER=0x0C][power: u8]
     pub async fn set_tx_power(&self, power: u8) -> Result<()> {
         let data = [CMD_SET_RADIO_TX_POWER, power];
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -399,7 +403,7 @@ impl CommandHandler {
         } else {
             vec![CMD_SEND_SELF_ADVERT]
         };
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -420,7 +424,7 @@ impl CommandHandler {
     /// Format: [CMD_GET_CUSTOM_VARS=0x28]
     pub async fn get_custom_vars(&self) -> Result<HashMap<String, String>> {
         let data = [CMD_GET_CUSTOM_VARS];
-        let event = self.send(&data, EventType::CustomVars).await?;
+        let event = self.send(&data, Some(EventType::CustomVars)).await?;
 
         match event.payload {
             EventPayload::CustomVars(vars) => Ok(vars),
@@ -436,7 +440,7 @@ impl CommandHandler {
         data.extend_from_slice(key.as_bytes());
         data.push(b'=');
         data.extend_from_slice(value.as_bytes());
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -445,7 +449,7 @@ impl CommandHandler {
     /// Format: [CMD_GET_CHANNEL=0x1F][channel_idx: u8]
     pub async fn get_channel(&self, channel_idx: u8) -> Result<ChannelInfoData> {
         let data = [CMD_GET_CHANNEL, channel_idx];
-        let event = self.send(&data, EventType::ChannelInfo).await?;
+        let event = self.send(&data, Some(EventType::ChannelInfo)).await?;
 
         match event.payload {
             EventPayload::ChannelInfo(info) => Ok(info),
@@ -464,7 +468,7 @@ impl CommandHandler {
         name_bytes[..name_len].copy_from_slice(&name.as_bytes()[..name_len]);
         data.extend_from_slice(&name_bytes);
         data.extend_from_slice(secret);
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -494,7 +498,7 @@ impl CommandHandler {
     pub async fn import_private_key(&self, key: &[u8; 64]) -> Result<()> {
         let mut data = vec![CMD_IMPORT_PRIVATE_KEY];
         data.extend_from_slice(key);
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -517,7 +521,7 @@ impl CommandHandler {
         let mut data = vec![CMD_GET_CONTACTS];
         data.extend_from_slice(&last_modification_timestamp.to_le_bytes());
         let event = self
-            .send_with_timeout(&data, EventType::Contacts, timeout)
+            .send_with_timeout(&data, Some(EventType::Contacts), timeout)
             .await?;
 
         match event.payload {
@@ -552,7 +556,7 @@ impl CommandHandler {
         data.extend_from_slice(&contact.adv_lat.to_le_bytes());
         data.extend_from_slice(&contact.adv_lon.to_le_bytes());
 
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -565,7 +569,7 @@ impl CommandHandler {
 
         let mut data = vec![CMD_REMOVE_CONTACT];
         data.extend_from_slice(&prefix);
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -583,7 +587,7 @@ impl CommandHandler {
             vec![CMD_EXPORT_CONTACT]
         };
 
-        let event = self.send(&data, EventType::ContactUri).await?;
+        let event = self.send(&data, Some(EventType::ContactUri)).await?;
 
         match event.payload {
             EventPayload::String(uri) => Ok(uri),
@@ -597,7 +601,7 @@ impl CommandHandler {
     pub async fn import_contact(&self, card_data: &[u8]) -> Result<()> {
         let mut data = vec![CMD_IMPORT_CONTACT];
         data.extend_from_slice(card_data);
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -664,7 +668,7 @@ impl CommandHandler {
         data.extend_from_slice(&prefix);
         data.extend_from_slice(msg.as_bytes());
 
-        let event = self.send(&data, EventType::MsgSent).await?;
+        let event = self.send(&data, Some(EventType::MsgSent)).await?;
 
         match event.payload {
             EventPayload::MsgSent(info) => Ok(info),
@@ -693,7 +697,7 @@ impl CommandHandler {
         data.extend_from_slice(&ts.to_le_bytes());
         data.extend_from_slice(msg.as_bytes());
 
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -714,7 +718,7 @@ impl CommandHandler {
         data.extend_from_slice(&pubkey);
         data.extend_from_slice(password.as_bytes());
 
-        let event = self.send(&data, EventType::MsgSent).await?;
+        let event = self.send(&data, Some(EventType::MsgSent)).await?;
 
         match event.payload {
             EventPayload::MsgSent(info) => Ok(info),
@@ -734,7 +738,7 @@ impl CommandHandler {
         let mut data = vec![CMD_LOGOUT];
         data.extend_from_slice(&pubkey);
 
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -757,7 +761,7 @@ impl CommandHandler {
         data.push(req_type as u8);
         data.extend_from_slice(&pubkey);
 
-        let event = self.send(&data, EventType::MsgSent).await?;
+        let event = self.send(&data, Some(EventType::MsgSent)).await?;
 
         match event.payload {
             EventPayload::MsgSent(info) => {
@@ -796,7 +800,7 @@ impl CommandHandler {
         filters.insert("tag".to_string(), hex_encode(&sent.expected_ack));
 
         let event = self
-            .wait_for_event(EventType::StatusResponse, filters, timeout)
+            .wait_for_event(Some(EventType::StatusResponse), filters, timeout)
             .await?;
 
         match event.payload {
@@ -823,7 +827,7 @@ impl CommandHandler {
         filters.insert("tag".to_string(), hex_encode(&sent.expected_ack));
 
         let event = self
-            .wait_for_event(EventType::TelemetryResponse, filters, timeout)
+            .wait_for_event(Some(EventType::TelemetryResponse), filters, timeout)
             .await?;
 
         match event.payload {
@@ -849,7 +853,7 @@ impl CommandHandler {
         filters.insert("tag".to_string(), hex_encode(&sent.expected_ack));
 
         let event = self
-            .wait_for_event(EventType::AclResponse, filters, timeout)
+            .wait_for_event(Some(EventType::AclResponse), filters, timeout)
             .await?;
 
         match event.payload {
@@ -890,7 +894,7 @@ impl CommandHandler {
         data.extend_from_slice(&count.to_le_bytes());
         data.extend_from_slice(&offset.to_le_bytes());
 
-        let event = self.send(&data, EventType::MsgSent).await?;
+        let event = self.send(&data, Some(EventType::MsgSent)).await?;
         let sent = match event.payload {
             EventPayload::MsgSent(info) => info,
             _ => return Err(Error::protocol("Unexpected response to neighbours request")),
@@ -912,7 +916,7 @@ impl CommandHandler {
         filters.insert("tag".to_string(), hex_encode(&sent.expected_ack));
 
         let event = self
-            .wait_for_event(EventType::NeighboursResponse, filters, timeout)
+            .wait_for_event(Some(EventType::NeighboursResponse), filters, timeout)
             .await?;
 
         match event.payload {
@@ -928,7 +932,7 @@ impl CommandHandler {
     /// Format: [CMD_SIGN_START=0x21]
     pub async fn sign_start(&self) -> Result<u32> {
         let data = [CMD_SIGN_START];
-        let event = self.send(&data, EventType::SignStart).await?;
+        let event = self.send(&data, Some(EventType::SignStart)).await?;
 
         match event.payload {
             EventPayload::SignStart { max_length } => Ok(max_length),
@@ -942,7 +946,7 @@ impl CommandHandler {
     pub async fn sign_data(&self, chunk: &[u8]) -> Result<()> {
         let mut data = vec![CMD_SIGN_DATA];
         data.extend_from_slice(chunk);
-        self.send(&data, EventType::Ok).await?;
+        self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
 
@@ -952,7 +956,7 @@ impl CommandHandler {
     pub async fn sign_finish(&self, timeout: Duration) -> Result<Vec<u8>> {
         let data = [CMD_SIGN_FINISH];
         let event = self
-            .send_with_timeout(&data, EventType::Signature, timeout)
+            .send_with_timeout(&data, Some(EventType::Signature), timeout)
             .await?;
 
         match event.payload {
@@ -1236,12 +1240,12 @@ mod tests {
     async fn test_command_handler_send_timeout() {
         let (handler, mut rx, _dispatcher) = create_test_handler();
 
-        // Spawn a task to receive the sent data
+        // Spawn a task to receive the data
         let recv_task = tokio::spawn(async move { rx.recv().await });
 
-        // Send with a short timeout - should timeout since no response comes
+        // Send with a short timeout - should the timeout since no response comes
         let result = handler
-            .send_with_timeout(&[0x01], EventType::Ok, Duration::from_millis(10))
+            .send_with_timeout(&[0x01], Some(EventType::Ok), Duration::from_millis(10))
             .await;
 
         assert!(result.is_err());
@@ -1261,11 +1265,11 @@ mod tests {
             // Wait for the command to be sent
             let _sent = rx.recv().await;
             // Emit the expected response
-            dispatcher_clone.emit(Event::ok()).await;
+            dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler
-            .send_with_timeout(&[0x01], EventType::Ok, Duration::from_millis(100))
+            .send_with_timeout(&[0x01], Some(EventType::Ok), Duration::from_millis(100))
             .await;
 
         assert!(result.is_ok());
@@ -1277,7 +1281,11 @@ mod tests {
         let (handler, _rx, _dispatcher) = create_test_handler();
 
         let result = handler
-            .wait_for_event(EventType::Ok, HashMap::new(), Duration::from_millis(10))
+            .wait_for_event(
+                Some(EventType::Ok),
+                HashMap::new(),
+                Duration::from_millis(10),
+            )
             .await;
 
         assert!(result.is_err());
@@ -1290,11 +1298,15 @@ mod tests {
         // Emit an event
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(5)).await;
-            dispatcher.emit(Event::ok()).await;
+            dispatcher.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler
-            .wait_for_event(EventType::Ok, HashMap::new(), Duration::from_millis(100))
+            .wait_for_event(
+                Some(EventType::Ok),
+                HashMap::new(),
+                Duration::from_millis(100),
+            )
             .await;
 
         assert!(result.is_ok());
@@ -1307,7 +1319,7 @@ mod tests {
         // Emit an error event
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(5)).await;
-            dispatcher.emit(Event::error("test")).await;
+            dispatcher.emit(MeshCoreEvent::error("test")).await;
         });
 
         let result = handler
@@ -1343,7 +1355,9 @@ mod tests {
         let dispatcher_clone = dispatcher.clone();
         tokio::spawn(async move {
             let _sent = rx.recv().await;
-            dispatcher_clone.emit(Event::error("device busy")).await;
+            dispatcher_clone
+                .emit(MeshCoreEvent::error("device busy"))
+                .await;
         });
 
         let result = handler
@@ -1390,7 +1404,7 @@ mod tests {
                 name: "TestDevice".to_string(),
             };
             dispatcher_clone
-                .emit(Event::new(
+                .emit(MeshCoreEvent::new(
                     EventType::SelfInfo,
                     EventPayload::SelfInfo(info),
                 ))
@@ -1418,7 +1432,10 @@ mod tests {
                 storage: 100,
             };
             dispatcher_clone
-                .emit(Event::new(EventType::Battery, EventPayload::Battery(info)))
+                .emit(MeshCoreEvent::new(
+                    EventType::Battery,
+                    EventPayload::Battery(info),
+                ))
                 .await;
         });
 
@@ -1438,7 +1455,7 @@ mod tests {
             assert_eq!(sent[0], CMD_GET_DEVICE_TIME);
 
             dispatcher_clone
-                .emit(Event::new(
+                .emit(MeshCoreEvent::new(
                     EventType::CurrentTime,
                     EventPayload::Time(1234567890),
                 ))
@@ -1458,11 +1475,11 @@ mod tests {
         tokio::spawn(async move {
             let sent = rx.recv().await.unwrap();
             assert_eq!(sent[0], CMD_SET_DEVICE_TIME);
-            // Verify timestamp is included
+            // Verify the timestamp is included
             let ts = u32::from_le_bytes([sent[1], sent[2], sent[3], sent[4]]);
             assert_eq!(ts, 1234567890);
 
-            dispatcher_clone.emit(Event::ok()).await;
+            dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler.set_time(1234567890).await;
@@ -1479,7 +1496,7 @@ mod tests {
             assert_eq!(sent[0], CMD_SET_ADVERT_NAME);
             assert_eq!(&sent[1..], b"MyNode");
 
-            dispatcher_clone.emit(Event::ok()).await;
+            dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler.set_name("MyNode").await;
@@ -1497,7 +1514,7 @@ mod tests {
             // Verify coordinates are present (lat + lon = 8 bytes after command)
             assert!(sent.len() >= 9);
 
-            dispatcher_clone.emit(Event::ok()).await;
+            dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler.set_coords(37.7749, -122.4194).await;
@@ -1514,7 +1531,7 @@ mod tests {
             assert_eq!(sent[0], CMD_SET_RADIO_TX_POWER);
             assert_eq!(sent[1], 20);
 
-            dispatcher_clone.emit(Event::ok()).await;
+            dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler.set_tx_power(20).await;
@@ -1531,7 +1548,7 @@ mod tests {
             assert_eq!(sent[0], CMD_SEND_SELF_ADVERT);
             assert_eq!(sent[1], 0x01); // flood flag
 
-            dispatcher_clone.emit(Event::ok()).await;
+            dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler.send_advert(true).await;
@@ -1548,7 +1565,7 @@ mod tests {
             assert_eq!(sent[0], CMD_SEND_SELF_ADVERT);
             assert_eq!(sent.len(), 1); // no flood flag
 
-            dispatcher_clone.emit(Event::ok()).await;
+            dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler.send_advert(false).await;
@@ -1591,7 +1608,7 @@ mod tests {
                 last_modification_timestamp: 0,
             }];
             dispatcher_clone
-                .emit(Event::new(
+                .emit(MeshCoreEvent::new(
                     EventType::Contacts,
                     EventPayload::Contacts(contacts),
                 ))
@@ -1616,7 +1633,7 @@ mod tests {
             assert_eq!(sent.len(), 1); // no pubkey for self
 
             dispatcher_clone
-                .emit(Event::new(
+                .emit(MeshCoreEvent::new(
                     EventType::ContactUri,
                     EventPayload::String("mod.rs://...".to_string()),
                 ))
@@ -1644,7 +1661,7 @@ mod tests {
                 secret: [0; 16],
             };
             dispatcher_clone
-                .emit(Event::new(
+                .emit(MeshCoreEvent::new(
                     EventType::ChannelInfo,
                     EventPayload::ChannelInfo(info),
                 ))
@@ -1666,7 +1683,7 @@ mod tests {
             assert_eq!(sent[0], CMD_SIGN_START);
 
             dispatcher_clone
-                .emit(Event::new(
+                .emit(MeshCoreEvent::new(
                     EventType::SignStart,
                     EventPayload::SignStart { max_length: 4096 },
                 ))
@@ -1690,7 +1707,7 @@ mod tests {
             let mut vars = HashMap::new();
             vars.insert("key1".to_string(), "value1".to_string());
             dispatcher_clone
-                .emit(Event::new(
+                .emit(MeshCoreEvent::new(
                     EventType::CustomVars,
                     EventPayload::CustomVars(vars),
                 ))
@@ -1715,7 +1732,7 @@ mod tests {
             let payload = String::from_utf8_lossy(&sent[1..]);
             assert!(payload.contains("mykey=myvalue"));
 
-            dispatcher_clone.emit(Event::ok()).await;
+            dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler.set_custom_var("mykey", "myvalue").await;
@@ -1732,7 +1749,10 @@ mod tests {
             assert_eq!(sent[0], CMD_SYNC_NEXT_MESSAGE);
 
             dispatcher_clone
-                .emit(Event::new(EventType::NoMoreMessages, EventPayload::None))
+                .emit(MeshCoreEvent::new(
+                    EventType::NoMoreMessages,
+                    EventPayload::None,
+                ))
                 .await;
         });
 
@@ -1760,7 +1780,7 @@ mod tests {
                 channel: None,
             };
             dispatcher_clone
-                .emit(Event::new(
+                .emit(MeshCoreEvent::new(
                     EventType::ContactMsgRecv,
                     EventPayload::Message(msg),
                 ))
