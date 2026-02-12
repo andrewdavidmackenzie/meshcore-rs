@@ -12,11 +12,11 @@ use std::env;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging with DEBUG level for meshcore
+    // Initialize logging with DEBUG level for mod.rs
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("meshcore-rs=debug".parse().unwrap()),
+                .add_directive("mod.rs-rs=debug".parse().unwrap()),
         )
         .init();
 

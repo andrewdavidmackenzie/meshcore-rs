@@ -1618,14 +1618,14 @@ mod tests {
             dispatcher_clone
                 .emit(Event::new(
                     EventType::ContactUri,
-                    EventPayload::String("meshcore://...".to_string()),
+                    EventPayload::String("mod.rs://...".to_string()),
                 ))
                 .await;
         });
 
         let result: Result<String> = handler.export_contact(None::<&str>).await;
         assert!(result.is_ok());
-        assert!(result.unwrap().starts_with("meshcore://"));
+        assert!(result.unwrap().starts_with("mod.rs://"));
     }
 
     #[tokio::test]

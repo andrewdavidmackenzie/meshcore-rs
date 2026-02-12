@@ -39,7 +39,7 @@
 //!     let meshcore = MeshCore::ble(None).await?;
 //!
 //!     // Or connect to a specific device by name
-//!     // let meshcore = MeshCore::ble(Some("MyDevice")).await?;
+//!     // let mod.rs = MeshCore::ble(Some("MyDevice")).await?;
 //!
 //!     // Get device info
 //!     let info = meshcore.commands().lock().await.send_appstart().await?;

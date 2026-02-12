@@ -781,7 +781,7 @@ mod tests {
         let mut receiver = dispatcher.receiver();
 
         let mut data = vec![PacketType::ContactUri as u8];
-        data.extend_from_slice(b"meshcore://contact/abc123");
+        data.extend_from_slice(b"mod.rs://contact/abc123");
 
         reader.handle_rx(data).await.unwrap();
 
@@ -792,7 +792,7 @@ mod tests {
 
         assert_eq!(event.event_type, EventType::ContactUri);
         match event.payload {
-            EventPayload::String(s) => assert_eq!(s, "meshcore://contact/abc123"),
+            EventPayload::String(s) => assert_eq!(s, "mod.rs://contact/abc123"),
             _ => panic!("Expected String payload"),
         }
     }
