@@ -36,7 +36,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), meshcore_rs::Error> {
 //!     // Connect via BLE (scans for any MeshCore device)
-//!     let meshcore = MeshCore::ble(None).await?;
+//!     let meshcore = MeshCore::ble_connect(None).await?;
 //!
 //!     // Or connect to a specific device by name
 //!     // let mod.rs = MeshCore::ble(Some("MyDevice")).await?;

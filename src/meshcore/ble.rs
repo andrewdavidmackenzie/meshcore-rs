@@ -17,8 +17,8 @@ const MESHCORE_TX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e5
 const MESHCORE_RX_CHAR_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
 
 impl MeshCore {
-    /// Find MeshCore radios on BTLE using an optional name to search for
-    pub async fn ble_discover(device_name: Option<&str>) -> crate::Result<Peripheral> {
+    /// Find MeshCore radios on BTLE upto the time specified by `scan_duration` and return their names
+    pub async fn ble_discover(scan_duration: Duration) -> crate::Result<Vec<String>> {
         // Get the Bluetooth adapter
         let manager = Manager::new()
             .await
@@ -42,53 +42,41 @@ impl MeshCore {
 
         // Start scanning
         adapter
-            .start_scan(ScanFilter::default())
+            .start_scan(ScanFilter {
+                services: vec![MESHCORE_SERVICE_UUID],
+            })
             .await
             .map_err(|e| Error::connection(format!("Failed to start BLE scan: {}", e)))?;
 
         tracing::info!("Scanning for MeshCore devices...");
 
-        let target_peripheral: Option<Peripheral> = {
-            let timeout = tokio::time::timeout(Duration::from_secs(30), async {
-                while let Some(event) = events.next().await {
-                    if let CentralEvent::DeviceDiscovered(id) = event {
-                        if let Ok(peripheral) = adapter.peripheral(&id).await {
-                            if let Ok(Some(props)) = peripheral.properties().await {
-                                let name = props.local_name.as_deref();
+        let mut discovered_meshcore_radios = Vec::new();
 
-                                // Check if this is our target device
-                                let is_target = if let Some(target_name) = device_name {
-                                    name.map(|n| n.contains(target_name)).unwrap_or(false)
-                                } else {
-                                    // Check if device advertises MeshCore service
-                                    props.services.contains(&MESHCORE_SERVICE_UUID)
-                                        || name
-                                            .map(|n| n.contains("MeshCore") || n.contains("mod.rs"))
-                                            .unwrap_or(false)
-                                };
-
-                                if is_target {
-                                    return Some(peripheral);
-                                }
+        let _ = tokio::time::timeout(scan_duration, async {
+            while let Some(event) = events.next().await {
+                if let CentralEvent::DeviceDiscovered(id) = event {
+                    if let Ok(peripheral) = adapter.peripheral(&id).await {
+                        if let Ok(Some(props)) = peripheral.properties().await {
+                            if let Some(name) = &props.local_name {
+                                discovered_meshcore_radios.push(name.clone());
                             }
                         }
                     }
                 }
-                None
-            })
-            .await;
-
-            timeout.unwrap_or_else(|_| None)
-        };
+            }
+        })
+        .await;
 
         // Stop scanning
         let _ = adapter.stop_scan().await;
+        tracing::info!("Stopped scanning for MeshCore devices...");
 
-        target_peripheral.ok_or_else(|| Error::connection("MeshCore device not found"))
+        Ok(discovered_meshcore_radios)
     }
 
-    /// Connect to a MeshCore peripheral and return the [MeshCore] to use to communicate with it
-    async fn ble_connect(
+    /// Connect to a Btle peripheral that is a MeshCore radio and return the [MeshCore] to use to
+    /// communicate with it
+    async fn ble_connect_peripheral(
         peripheral: &Peripheral,
     ) -> crate::Result<(MeshCore, Receiver<Vec<u8>>, Characteristic)> {
         // Check if already connected, disconnect first if so
@@ -167,13 +155,67 @@ impl MeshCore {
         Ok((MeshCore::new_with_sender(tx), rx, tx_char))
     }
 
-    /// Create a MeshCore client connected via BLE
-    ///
-    /// This method scans for BLE devices and connects to a MeshCore device.
-    /// If `device_name` is provided, it will connect to a device with that name.
-    /// Otherwise, it will connect to the first device advertising the MeshCore service.
-    pub async fn ble(peripheral: &Peripheral) -> crate::Result<MeshCore> {
-        let (meshcore, mut rx, tx_char) = Self::ble_connect(peripheral).await?;
+    /// Given a peripheral's name, get the peripheral object
+    async fn find_peripheral(target_name: &str) -> crate::Result<Peripheral> {
+        let manager = Manager::new()
+            .await
+            .map_err(|e| Error::connection(format!("Failed to create BLE manager: {}", e)))?;
+
+        let adapters = manager
+            .adapters()
+            .await
+            .map_err(|e| Error::connection(format!("Failed to get BLE adapters: {}", e)))?;
+
+        let adapter = adapters
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::connection("No BLE adapters found"))?;
+
+        // Subscribe to adapter events
+        let mut events = adapter
+            .events()
+            .await
+            .map_err(|e| Error::connection(format!("Failed to get adapter events: {}", e)))?;
+
+        adapter
+            .start_scan(ScanFilter {
+                services: vec![MESHCORE_SERVICE_UUID],
+            })
+            .await
+            .map_err(|e| Error::connection(format!("Failed to start BLE scan: {}", e)))?;
+
+        let target_peripheral: Option<Peripheral> = {
+            let timeout = tokio::time::timeout(Duration::from_secs(1), async {
+                while let Some(event) = events.next().await {
+                    if let CentralEvent::DeviceDiscovered(id) = event {
+                        if let Ok(peripheral) = adapter.peripheral(&id).await {
+                            if let Ok(Some(props)) = peripheral.properties().await {
+                                if props.local_name.as_deref() == Some(target_name) {
+                                    return Some(peripheral);
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            })
+            .await;
+
+            timeout.unwrap_or_else(|_| None)
+        };
+
+        adapter
+            .stop_scan()
+            .await
+            .map_err(|e| Error::connection(format!("Failed to stop BLE scan: {}", e)))?;
+
+        target_peripheral.ok_or_else(|| Error::connection("MeshCore device not found"))
+    }
+
+    /// This method connects to a MeshCore radio by BTLE device name
+    pub async fn ble_connect(name: &str) -> crate::Result<MeshCore> {
+        let peripheral = Self::find_peripheral(name).await?;
+        let (meshcore, mut rx, tx_char) = Self::ble_connect_peripheral(&peripheral).await?;
 
         // Clone peripheral for tasks
         let peripheral_write = peripheral.clone();
