@@ -453,12 +453,12 @@ impl CommandHandler {
 
     /// Set channel
     ///
-    /// Format: [CMD_SET_CHANNEL=0x20][channel_idx][name: 16 bytes][secret: 16 bytes]
+    /// Format: [CMD_SET_CHANNEL=0x20][channel_idx][name: 32 bytes][secret: 16 bytes]
     pub async fn set_channel(&self, channel_idx: u8, name: &str, secret: &[u8; 16]) -> Result<()> {
         let mut data = vec![CMD_SET_CHANNEL, channel_idx];
         // Pad or truncate name to 16 bytes
-        let mut name_bytes = [0u8; 16];
-        let name_len = name.len().min(16);
+        let mut name_bytes = [0u8; 32];
+        let name_len = name.len().min(32);
         name_bytes[..name_len].copy_from_slice(&name.as_bytes()[..name_len]);
         data.extend_from_slice(&name_bytes);
         data.extend_from_slice(secret);
