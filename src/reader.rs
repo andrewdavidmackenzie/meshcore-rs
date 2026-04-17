@@ -473,9 +473,13 @@ impl MessageReader {
             }
 
             PacketType::BinaryResponse => {
-                if payload.len() >= 4 {
-                    let tag: [u8; 4] = read_bytes(payload, 0).unwrap_or([0; 4]);
-                    let data = payload[4..].to_vec();
+                // Firmware layout: [subtype: 1][tag: 4][data...]
+                // Skip the subtype byte; tag lives at offset 1, data from offset 5.
+                // See meshcore_py reader.py:727:
+                //   dbuf.read(1); tag = dbuf.read(4).hex(); response_data = dbuf.read()
+                if payload.len() >= 5 {
+                    let tag: [u8; 4] = read_bytes(payload, 1).unwrap_or([0; 4]);
+                    let data = payload[5..].to_vec();
 
                     // Check if we have a pending request for this tag
                     let tag_hex = hex_encode(&tag);
@@ -1458,6 +1462,7 @@ mod tests {
             .await;
 
         let mut data = vec![PacketType::BinaryResponse as u8];
+        data.push(0x00); // subtype byte (firmware layout: [subtype][tag:4][data…])
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
         data.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // telemetry data
 
@@ -1478,6 +1483,7 @@ mod tests {
         let mut receiver = dispatcher.receiver();
 
         let mut data = vec![PacketType::BinaryResponse as u8];
+        data.push(0x00); // subtype byte (firmware layout: [subtype][tag:4][data…])
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // tag
         data.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // data
 
@@ -1911,6 +1917,7 @@ mod tests {
             .await;
 
         let mut data = vec![PacketType::BinaryResponse as u8];
+        data.push(0x00); // subtype byte (firmware layout: [subtype][tag:4][data…])
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
                                                            // ACL entry data (7 bytes per entry)
         data.extend_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x01]);
@@ -1950,6 +1957,7 @@ mod tests {
             .await;
 
         let mut data = vec![PacketType::BinaryResponse as u8];
+        data.push(0x00); // subtype byte (firmware layout: [subtype][tag:4][data…])
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
                                                            // MMA entry (14 bytes)
         data.push(1); // channel
@@ -1986,6 +1994,7 @@ mod tests {
             .await;
 
         let mut data = vec![PacketType::BinaryResponse as u8];
+        data.push(0x00); // subtype byte (firmware layout: [subtype][tag:4][data…])
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
                                                            // Neighbours data
         data.extend_from_slice(&1u16.to_le_bytes()); // total
@@ -2023,6 +2032,7 @@ mod tests {
             .await;
 
         let mut data = vec![PacketType::BinaryResponse as u8];
+        data.push(0x00); // subtype byte (firmware layout: [subtype][tag:4][data…])
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
                                                            // Status data (52 bytes)
         let mut status_data = vec![0u8; 52];
@@ -2057,6 +2067,7 @@ mod tests {
             .await;
 
         let mut data = vec![PacketType::BinaryResponse as u8];
+        data.push(0x00); // subtype byte (firmware layout: [subtype][tag:4][data…])
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
         data.extend_from_slice(&[0xAA, 0xBB]);
 
