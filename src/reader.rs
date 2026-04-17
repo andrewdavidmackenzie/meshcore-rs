@@ -520,8 +520,15 @@ impl MessageReader {
                                 )
                             }
                             BinaryReqType::Neighbours => {
-                                // Default to 6-byte pubkey prefix
-                                if let Ok(neighbours) = parse_neighbours(&data, 6) {
+                                // Firmware echoes pubkey prefix of the length the client
+                                // requested. `request_neighbours_with_timeout` stashes that
+                                // value in the context; default to 4 to match meshcore_py.
+                                let pk_plen = req
+                                    .context
+                                    .get("pubkey_prefix_length")
+                                    .and_then(|s| s.parse::<usize>().ok())
+                                    .unwrap_or(4);
+                                if let Ok(neighbours) = parse_neighbours(&data, pk_plen) {
                                     MeshCoreEvent::new(
                                         EventType::NeighboursResponse,
                                         EventPayload::Neighbours(neighbours),
@@ -1981,14 +1988,19 @@ mod tests {
         let (reader, dispatcher) = create_reader();
         let mut receiver = dispatcher.receiver();
 
-        // Register a pending Neighbors request
+        // Register a pending Neighbors request. The test data below uses 6-byte
+        // pubkey prefixes, so seed the context accordingly — in production the
+        // request builder sets this to whatever prefix length it negotiated
+        // (default 4 per meshcore_py).
+        let mut ctx = HashMap::new();
+        ctx.insert("pubkey_prefix_length".to_string(), "6".to_string());
         reader
             .register_binary_request(
                 &[0x01, 0x02, 0x03, 0x04],
                 BinaryReqType::Neighbours,
                 vec![],
                 Duration::from_secs(30),
-                HashMap::new(),
+                ctx,
                 false,
             )
             .await;

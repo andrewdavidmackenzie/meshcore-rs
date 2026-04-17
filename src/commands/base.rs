@@ -895,25 +895,36 @@ impl CommandHandler {
         }
     }
 
-    /// Request neighbours from a contact
+    /// Request neighbours from a contact.
+    ///
+    /// Defaults: `order_by = 0`, `pubkey_prefix_length = 4` (matches meshcore_py default).
     pub async fn request_neighbours(
         &self,
         dest: impl Into<Destination>,
-        count: u16,
+        count: u8,
         offset: u16,
     ) -> Result<NeighboursData> {
-        self.request_neighbours_with_timeout(dest, count, offset, self.default_timeout)
+        self.request_neighbours_with_timeout(dest, count, offset, 0, 4, self.default_timeout)
             .await
     }
 
-    /// Request neighbours with custom timeout
+    /// Request neighbours with custom timeout and options.
     ///
-    /// Format: [CMD_SEND_BINARY_REQ=0x32][req_type][pubkey: 32][count: u16][offset: u16]
+    /// Canonical wire format (matches meshcore_py `commands/binary.py::req_neighbours_async`):
+    ///
+    /// `[CMD_SEND_BINARY_REQ=0x32][pubkey: 32][type=NEIGHBOURS=0x02]`
+    /// `[version: u8 = 0][count: u8][offset: u16 LE][order_by: u8][pk_plen: u8][nonce: u32 LE]`
+    ///
+    /// The firmware echoes `pk_plen` in the response's per-entry pubkey width;
+    /// the reader reads that back via the `pubkey_prefix_length` context attribute
+    /// so `parse_neighbours` uses the correct entry stride.
     pub async fn request_neighbours_with_timeout(
         &self,
         dest: impl Into<Destination>,
-        count: u16,
+        count: u8,
         offset: u16,
+        order_by: u8,
+        pubkey_prefix_length: u8,
         timeout: Duration,
     ) -> Result<NeighboursData> {
         let dest: Destination = dest.into();
@@ -921,11 +932,29 @@ impl CommandHandler {
             Error::invalid_param("Neighbours request requires full 32-byte public key")
         })?;
 
+        // Non-zero nonce derived from the system clock; the firmware only needs
+        // uniqueness for request/response correlation, not cryptographic entropy.
+        let nonce = {
+            let n = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(1);
+            if n == 0 {
+                1
+            } else {
+                n
+            }
+        };
+
         let mut data = vec![CMD_SEND_BINARY_REQ];
-        data.push(BinaryReqType::Neighbours as u8);
         data.extend_from_slice(&pubkey);
-        data.extend_from_slice(&count.to_le_bytes());
+        data.push(BinaryReqType::Neighbours as u8);
+        data.push(0u8); // version
+        data.push(count);
         data.extend_from_slice(&offset.to_le_bytes());
+        data.push(order_by);
+        data.push(pubkey_prefix_length);
+        data.extend_from_slice(&nonce.to_le_bytes());
 
         let event = self.send(&data, Some(EventType::MsgSent)).await?;
         let sent = match event.payload {
@@ -933,14 +962,19 @@ impl CommandHandler {
             _ => return Err(Error::protocol("Unexpected response to neighbours request")),
         };
 
-        // Register the request
+        // Pass pk_plen through to the reader so `parse_neighbours` uses the right stride.
+        let mut ctx = HashMap::new();
+        ctx.insert(
+            "pubkey_prefix_length".to_string(),
+            pubkey_prefix_length.to_string(),
+        );
         self.reader
             .register_binary_request(
                 &sent.expected_ack,
                 BinaryReqType::Neighbours,
                 pubkey.to_vec(),
                 timeout,
-                HashMap::new(),
+                ctx,
                 false,
             )
             .await;
