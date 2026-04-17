@@ -776,7 +776,9 @@ impl CommandHandler {
 
     /// Send a binary request to a contact
     ///
-    /// Format: [CMD_SEND_BINARY_REQ=0x32][req_type][pubkey: 32]
+    /// Format: [CMD_SEND_BINARY_REQ=0x32][pubkey: 32][req_type]
+    /// (Firmware and canonical meshcore_py use pubkey-then-type; see
+    /// meshcore_py commands/base.py:244.)
     pub async fn send_binary_req(
         &self,
         dest: impl Into<Destination>,
@@ -788,8 +790,8 @@ impl CommandHandler {
         })?;
 
         let mut data = vec![CMD_SEND_BINARY_REQ];
-        data.push(req_type as u8);
         data.extend_from_slice(&pubkey);
+        data.push(req_type as u8);
 
         let event = self.send(&data, Some(EventType::MsgSent)).await?;
 
