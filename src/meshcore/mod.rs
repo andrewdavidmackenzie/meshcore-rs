@@ -3,7 +3,7 @@
 use crate::commands::CommandHandler;
 use crate::events::*;
 #[cfg(any(feature = "serial", feature = "tcp"))]
-use crate::packets::FRAME_START;
+use crate::packets::{FRAME_START, FRAME_START_RESP};
 use crate::reader::MessageReader;
 use crate::Result;
 #[cfg(any(feature = "serial", feature = "tcp"))]
@@ -392,7 +392,10 @@ pub async fn read_task<R>(
                 buffer.extend_from_slice(&read_buf[..n]);
 
                 while buffer.len() >= 3 {
-                    if buffer[0] != FRAME_START {
+                    // The MeshCore companion protocol uses 0x3c for
+                    // app → radio frames and 0x3e for radio → app frames.
+                    // Accept either so we can read responses correctly.
+                    if buffer[0] != FRAME_START && buffer[0] != FRAME_START_RESP {
                         use bytes::Buf;
                         buffer.advance(1);
                         continue;

@@ -187,8 +187,11 @@ impl From<u8> for ControlType {
     }
 }
 
-/// Frame start marker byte
+/// Frame start marker byte (app → radio, commands)
 pub const FRAME_START: u8 = 0x3c;
+
+/// Frame start marker byte (radio → app, responses)
+pub const FRAME_START_RESP: u8 = 0x3e;
 
 /// Default serial baud rate
 pub const DEFAULT_BAUD_RATE: u32 = 115200;
