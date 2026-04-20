@@ -776,7 +776,9 @@ impl CommandHandler {
 
     /// Send a binary request to a contact
     ///
-    /// Format: [CMD_SEND_BINARY_REQ=0x32][req_type][pubkey: 32]
+    /// Format: [CMD_SEND_BINARY_REQ=0x32][pubkey: 32][req_type]
+    /// (Firmware and canonical meshcore_py use pubkey-then-type; see
+    /// meshcore_py commands/base.py:244.)
     pub async fn send_binary_req(
         &self,
         dest: impl Into<Destination>,
@@ -788,8 +790,8 @@ impl CommandHandler {
         })?;
 
         let mut data = vec![CMD_SEND_BINARY_REQ];
-        data.push(req_type as u8);
         data.extend_from_slice(&pubkey);
+        data.push(req_type as u8);
 
         let event = self.send(&data, Some(EventType::MsgSent)).await?;
 
@@ -1892,5 +1894,38 @@ mod tests {
             }
             _ => panic!("Expected ContactMessage payload"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_send_binary_req_field_order() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            // Verify wire format: [CMD=0x32][pubkey:32][req_type]
+            assert_eq!(sent[0], CMD_SEND_BINARY_REQ);
+            // Bytes 1..33 should be the pubkey
+            assert_eq!(&sent[1..33], &[0xAA; 32]);
+            // Byte 33 should be the request type (Telemetry = 0x03)
+            assert_eq!(sent[33], BinaryReqType::Telemetry as u8);
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::MsgSent,
+                    EventPayload::MsgSent(MsgSentInfo {
+                        message_type: 0,
+                        expected_ack: [0x01, 0x02, 0x03, 0x04],
+                        suggested_timeout: 5000,
+                    }),
+                ))
+                .await;
+        });
+
+        let dest = vec![0xAAu8; 32];
+        let result = handler
+            .send_binary_req(dest, BinaryReqType::Telemetry)
+            .await;
+        assert!(result.is_ok());
     }
 }

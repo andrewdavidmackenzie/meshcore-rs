@@ -3,7 +3,7 @@
 use crate::commands::CommandHandler;
 use crate::events::*;
 #[cfg(any(feature = "serial", feature = "tcp"))]
-use crate::packets::FRAME_START;
+use crate::packets::{FRAME_START, FRAME_START_RESP};
 use crate::reader::MessageReader;
 use crate::Result;
 #[cfg(any(feature = "serial", feature = "tcp"))]
@@ -392,7 +392,7 @@ pub async fn read_task<R>(
                 buffer.extend_from_slice(&read_buf[..n]);
 
                 while buffer.len() >= 3 {
-                    if buffer[0] != FRAME_START {
+                    if buffer[0] != FRAME_START && buffer[0] != FRAME_START_RESP {
                         use bytes::Buf;
                         buffer.advance(1);
                         continue;
@@ -493,5 +493,11 @@ mod tests {
     fn test_frame_start_constant() {
         assert_eq!(FRAME_START, 0x3c);
         assert_eq!(FRAME_START, b'<');
+    }
+
+    #[test]
+    fn test_frame_start_resp_constant() {
+        assert_eq!(FRAME_START_RESP, 0x3e);
+        assert_eq!(FRAME_START_RESP, b'>');
     }
 }
