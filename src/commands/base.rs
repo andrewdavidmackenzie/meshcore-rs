@@ -280,7 +280,7 @@ impl CommandHandler {
 
     // ========== Device Commands ==========
 
-    /// Send APPSTART command to initialize connection
+    /// Send APPSTART command to initialise connection
     ///
     /// Format: [CMD_APP_START=0x01][reserved: 7 bytes][app_name: "mccli"]
     pub async fn send_appstart(&self) -> Result<SelfInfo> {
@@ -2006,17 +2006,12 @@ mod tests {
             // Wait until the caller has registered the binary request (it
             // emits MsgSent handling internally, then registers, then waits).
             // We detect readiness by watching for any activity after MsgSent.
-            loop {
-                if let Ok(ev) =
-                    tokio::time::timeout(Duration::from_millis(50), resp_rx.recv()).await
-                {
-                    if let Ok(e) = ev {
-                        if e.event_type == EventType::MsgSent {
-                            continue;
-                        }
+            while let Ok(ev) = tokio::time::timeout(Duration::from_millis(50), resp_rx.recv()).await
+            {
+                if let Ok(e) = ev {
+                    if e.event_type == EventType::MsgSent {
+                        continue;
                     }
-                } else {
-                    break; // Timeout = caller is now waiting, safe to emit
                 }
             }
 
@@ -2024,7 +2019,7 @@ mod tests {
                 .emit(
                     MeshCoreEvent::new(
                         EventType::NeighboursResponse,
-                        EventPayload::Neighbours(crate::events::NeighboursData {
+                        EventPayload::Neighbours(NeighboursData {
                             total: 0,
                             neighbours: vec![],
                         }),
