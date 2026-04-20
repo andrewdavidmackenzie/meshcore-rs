@@ -520,8 +520,12 @@ impl MessageReader {
                                 )
                             }
                             BinaryReqType::Neighbours => {
-                                // Default to 6-byte pubkey prefix
-                                if let Ok(neighbours) = parse_neighbours(&data, 6) {
+                                let pk_plen = req
+                                    .context
+                                    .get("pubkey_prefix_length")
+                                    .and_then(|s| s.parse::<usize>().ok())
+                                    .unwrap_or(4);
+                                if let Ok(neighbours) = parse_neighbours(&data, pk_plen) {
                                     MeshCoreEvent::new(
                                         EventType::NeighboursResponse,
                                         EventPayload::Neighbours(neighbours),
@@ -1981,14 +1985,17 @@ mod tests {
         let (reader, dispatcher) = create_reader();
         let mut receiver = dispatcher.receiver();
 
-        // Register a pending Neighbors request
+        // Register a pending Neighbors request with 6-byte pubkey prefix
+        // to match the test data below
+        let mut ctx = HashMap::new();
+        ctx.insert("pubkey_prefix_length".to_string(), "6".to_string());
         reader
             .register_binary_request(
                 &[0x01, 0x02, 0x03, 0x04],
                 BinaryReqType::Neighbours,
                 vec![],
                 Duration::from_secs(30),
-                HashMap::new(),
+                ctx,
                 false,
             )
             .await;
@@ -2012,6 +2019,52 @@ mod tests {
             .unwrap();
 
         assert_eq!(event.event_type, EventType::NeighboursResponse);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_binary_response_neighbours_default_pk_plen() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Register without context — should default to pk_plen=4
+        reader
+            .register_binary_request(
+                &[0x01, 0x02, 0x03, 0x04],
+                BinaryReqType::Neighbours,
+                vec![],
+                Duration::from_secs(30),
+                HashMap::new(),
+                false,
+            )
+            .await;
+
+        let mut data = vec![PacketType::BinaryResponse as u8];
+        data.push(0x00); // subtype byte
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // matching tag
+                                                           // Neighbours data with 4-byte pubkey prefix
+        data.extend_from_slice(&1u16.to_le_bytes()); // total
+        data.extend_from_slice(&1u16.to_le_bytes()); // count
+                                                     // Entry: pubkey (4) + secs_ago (4) + snr (1) = 9 bytes
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+        data.extend_from_slice(&300i32.to_le_bytes());
+        data.push(40); // snr
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::NeighboursResponse);
+        match event.payload {
+            EventPayload::Neighbours(n) => {
+                assert_eq!(n.total, 1);
+                assert_eq!(n.neighbours.len(), 1);
+                assert_eq!(n.neighbours[0].pubkey, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+            }
+            _ => panic!("Expected Neighbours payload"),
+        }
     }
 
     #[tokio::test]

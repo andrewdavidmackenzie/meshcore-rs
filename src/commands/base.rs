@@ -895,25 +895,36 @@ impl CommandHandler {
         }
     }
 
-    /// Request neighbours from a contact
+    /// Request neighbours from a contact.
+    ///
+    /// Defaults: `order_by = 0`, `pubkey_prefix_length = 4` (matches meshcore_py default).
     pub async fn request_neighbours(
         &self,
         dest: impl Into<Destination>,
-        count: u16,
+        count: u8,
         offset: u16,
     ) -> Result<NeighboursData> {
-        self.request_neighbours_with_timeout(dest, count, offset, self.default_timeout)
+        self.request_neighbours_with_timeout(dest, count, offset, 0, 4, self.default_timeout)
             .await
     }
 
-    /// Request neighbours with custom timeout
+    /// Request neighbours with custom timeout and options.
     ///
-    /// Format: [CMD_SEND_BINARY_REQ=0x32][req_type][pubkey: 32][count: u16][offset: u16]
+    /// Canonical wire format (matches meshcore_py `commands/binary.py::req_neighbours_async`):
+    ///
+    /// `[CMD_SEND_BINARY_REQ=0x32][pubkey: 32][type=NEIGHBOURS=0x06]`
+    /// `[version: u8 = 0][count: u8][offset: u16 LE][order_by: u8][pk_plen: u8][nonce: u32 LE]`
+    ///
+    /// The firmware echoes `pk_plen` in the response's per-entry pubkey width;
+    /// the reader reads that back via the `pubkey_prefix_length` context attribute
+    /// so `parse_neighbours` uses the correct entry stride.
     pub async fn request_neighbours_with_timeout(
         &self,
         dest: impl Into<Destination>,
-        count: u16,
+        count: u8,
         offset: u16,
+        order_by: u8,
+        pubkey_prefix_length: u8,
         timeout: Duration,
     ) -> Result<NeighboursData> {
         let dest: Destination = dest.into();
@@ -921,11 +932,27 @@ impl CommandHandler {
             Error::invalid_param("Neighbours request requires full 32-byte public key")
         })?;
 
+        let nonce = {
+            let n = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(1);
+            if n == 0 {
+                1
+            } else {
+                n
+            }
+        };
+
         let mut data = vec![CMD_SEND_BINARY_REQ];
-        data.push(BinaryReqType::Neighbours as u8);
         data.extend_from_slice(&pubkey);
-        data.extend_from_slice(&count.to_le_bytes());
+        data.push(BinaryReqType::Neighbours as u8);
+        data.push(0u8); // version
+        data.push(count);
         data.extend_from_slice(&offset.to_le_bytes());
+        data.push(order_by);
+        data.push(pubkey_prefix_length);
+        data.extend_from_slice(&nonce.to_le_bytes());
 
         let event = self.send(&data, Some(EventType::MsgSent)).await?;
         let sent = match event.payload {
@@ -933,14 +960,18 @@ impl CommandHandler {
             _ => return Err(Error::protocol("Unexpected response to neighbours request")),
         };
 
-        // Register the request
+        let mut ctx = HashMap::new();
+        ctx.insert(
+            "pubkey_prefix_length".to_string(),
+            pubkey_prefix_length.to_string(),
+        );
         self.reader
             .register_binary_request(
                 &sent.expected_ack,
                 BinaryReqType::Neighbours,
                 pubkey.to_vec(),
                 timeout,
-                HashMap::new(),
+                ctx,
                 false,
             )
             .await;
@@ -1925,6 +1956,64 @@ mod tests {
         let dest = vec![0xAAu8; 32];
         let result = handler
             .send_binary_req(dest, BinaryReqType::Telemetry)
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_request_neighbours_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            // Wire format: [CMD=0x32][pubkey:32][type=NEIGHBOURS=0x06]
+            //              [version:u8=0][count:u8][offset:u16 LE]
+            //              [order_by:u8][pk_plen:u8][nonce:u32 LE]
+            assert_eq!(sent[0], CMD_SEND_BINARY_REQ);
+            assert_eq!(&sent[1..33], &[0xBB; 32]); // pubkey
+            assert_eq!(sent[33], BinaryReqType::Neighbours as u8); // 0x06
+            assert_eq!(sent[34], 0); // version
+            assert_eq!(sent[35], 10); // count
+            assert_eq!(u16::from_le_bytes([sent[36], sent[37]]), 5); // offset
+            assert_eq!(sent[38], 2); // order_by
+            assert_eq!(sent[39], 4); // pubkey_prefix_length
+                                     // Bytes 40..44 are the nonce — non-zero
+            let nonce = u32::from_le_bytes([sent[40], sent[41], sent[42], sent[43]]);
+            assert_ne!(nonce, 0);
+            assert_eq!(sent.len(), 44); // total: 1 + 32 + 1 + 1 + 1 + 2 + 1 + 1 + 4 = 44
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::MsgSent,
+                    EventPayload::MsgSent(MsgSentInfo {
+                        message_type: 0,
+                        expected_ack: [0x01, 0x02, 0x03, 0x04],
+                        suggested_timeout: 5000,
+                    }),
+                ))
+                .await;
+
+            // Small delay so the caller can subscribe before we emit
+            tokio::time::sleep(Duration::from_millis(10)).await;
+
+            dispatcher_clone
+                .emit(
+                    MeshCoreEvent::new(
+                        EventType::NeighboursResponse,
+                        EventPayload::Neighbours(crate::events::NeighboursData {
+                            total: 0,
+                            neighbours: vec![],
+                        }),
+                    )
+                    .with_attribute("tag", "01020304".to_string()),
+                )
+                .await;
+        });
+
+        let dest = vec![0xBBu8; 32];
+        let result = handler
+            .request_neighbours_with_timeout(dest, 10, 5, 2, 4, Duration::from_millis(500))
             .await;
         assert!(result.is_ok());
     }
