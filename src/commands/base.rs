@@ -280,7 +280,7 @@ impl CommandHandler {
 
     // ========== Device Commands ==========
 
-    /// Send APPSTART command to initialize connection
+    /// Send APPSTART command to initialise connection
     ///
     /// Format: [CMD_APP_START=0x01][reserved: 7 bytes][app_name: "mccli"]
     pub async fn send_appstart(&self) -> Result<SelfInfo> {
