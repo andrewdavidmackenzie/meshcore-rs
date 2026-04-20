@@ -932,6 +932,12 @@ impl CommandHandler {
             Error::invalid_param("Neighbours request requires full 32-byte public key")
         })?;
 
+        if pubkey_prefix_length > 32 {
+            return Err(Error::invalid_param(
+                "pubkey_prefix_length cannot exceed 32",
+            ));
+        }
+
         let nonce = {
             let n = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1978,10 +1984,13 @@ mod tests {
             assert_eq!(u16::from_le_bytes([sent[36], sent[37]]), 5); // offset
             assert_eq!(sent[38], 2); // order_by
             assert_eq!(sent[39], 4); // pubkey_prefix_length
-                                     // Bytes 40..44 are the nonce — non-zero
             let nonce = u32::from_le_bytes([sent[40], sent[41], sent[42], sent[43]]);
             assert_ne!(nonce, 0);
-            assert_eq!(sent.len(), 44); // total: 1 + 32 + 1 + 1 + 1 + 2 + 1 + 1 + 4 = 44
+            assert_eq!(sent.len(), 44);
+
+            // Subscribe for the response *before* emitting MsgSent, so we
+            // don't miss the NeighboursResponse window.
+            let mut resp_rx = dispatcher_clone.receiver();
 
             dispatcher_clone
                 .emit(MeshCoreEvent::new(
@@ -1994,8 +2003,22 @@ mod tests {
                 ))
                 .await;
 
-            // Small delay so the caller can subscribe before we emit
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            // Wait until the caller has registered the binary request (it
+            // emits MsgSent handling internally, then registers, then waits).
+            // We detect readiness by watching for any activity after MsgSent.
+            loop {
+                if let Ok(ev) =
+                    tokio::time::timeout(Duration::from_millis(50), resp_rx.recv()).await
+                {
+                    if let Ok(e) = ev {
+                        if e.event_type == EventType::MsgSent {
+                            continue;
+                        }
+                    }
+                } else {
+                    break; // Timeout = caller is now waiting, safe to emit
+                }
+            }
 
             dispatcher_clone
                 .emit(
@@ -2016,5 +2039,15 @@ mod tests {
             .request_neighbours_with_timeout(dest, 10, 5, 2, 4, Duration::from_millis(500))
             .await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_request_neighbours_invalid_pubkey_prefix_length() {
+        let (handler, _rx, _dispatcher) = create_test_handler();
+        let dest = vec![0xAAu8; 32];
+        let result = handler
+            .request_neighbours_with_timeout(dest, 10, 0, 0, 33, Duration::from_millis(100))
+            .await;
+        assert!(result.is_err());
     }
 }
