@@ -187,8 +187,11 @@ impl From<u8> for ControlType {
     }
 }
 
-/// Frame start marker byte
+/// Frame start marker byte (app → radio, commands)
 pub const FRAME_START: u8 = 0x3c;
+
+/// Frame start marker byte (radio → app, responses)
+pub const FRAME_START_RESP: u8 = 0x3e;
 
 /// Default serial baud rate
 pub const DEFAULT_BAUD_RATE: u32 = 115200;
@@ -302,6 +305,8 @@ mod tests {
     #[test]
     fn test_constants() {
         assert_eq!(FRAME_START, 0x3c);
+        assert_eq!(FRAME_START_RESP, 0x3e);
+        assert_eq!(FRAME_START_RESP, b'>');
         assert_eq!(DEFAULT_BAUD_RATE, 115200);
         assert_eq!(BLE_SERVICE_UUID, "6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
         assert_eq!(BLE_RX_CHAR_UUID, "6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
