@@ -2019,7 +2019,7 @@ mod tests {
                 .emit(
                     MeshCoreEvent::new(
                         EventType::NeighboursResponse,
-                        EventPayload::Neighbours(crate::events::NeighboursData {
+                        EventPayload::Neighbours(NeighboursData {
                             total: 0,
                             neighbours: vec![],
                         }),
