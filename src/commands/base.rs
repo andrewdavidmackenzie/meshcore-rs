@@ -2006,17 +2006,12 @@ mod tests {
             // Wait until the caller has registered the binary request (it
             // emits MsgSent handling internally, then registers, then waits).
             // We detect readiness by watching for any activity after MsgSent.
-            loop {
-                if let Ok(ev) =
-                    tokio::time::timeout(Duration::from_millis(50), resp_rx.recv()).await
-                {
-                    if let Ok(e) = ev {
-                        if e.event_type == EventType::MsgSent {
-                            continue;
-                        }
+            while let Ok(ev) = tokio::time::timeout(Duration::from_millis(50), resp_rx.recv()).await
+            {
+                if let Ok(e) = ev {
+                    if e.event_type == EventType::MsgSent {
+                        continue;
                     }
-                } else {
-                    break; // Timeout = caller is now waiting, safe to emit
                 }
             }
 
