@@ -21,7 +21,7 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 meshcore-rs = "0.1"
-tokio = "1.52"
+tokio = "1"
 ```
 
 ### Optional Features
