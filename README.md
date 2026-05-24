@@ -20,7 +20,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-meshcore = "0.1"
+meshcore-rs = "0.1"
+tokio = "1.52"
 ```
 
 ### Optional Features
@@ -37,10 +38,10 @@ meshcore = { version = "0.1", features = ["ble"] }
 ## Quick Start
 
 ```rust
-use meshcore::MeshCore;
+use meshcore_rs::MeshCore;
 
 #[tokio::main]
-async fn main() -> Result<(), meshcore::Error> {
+async fn main() -> Result<(), meshcore_rs::Error> {
     // Connect via serial port
     let meshcore = MeshCore::serial("/dev/ttyUSB0", 115200).await?;
 
@@ -67,25 +68,42 @@ async fn main() -> Result<(), meshcore::Error> {
 ## Event Subscriptions
 
 ```rust
-use meshcore::{MeshCore, EventType};
+use meshcore_rs::{MeshCore, EventType};
 use std::collections::HashMap;
 
-// Subscribe to incoming messages
-let sub = meshcore.subscribe(
-    EventType::ContactMsgRecv,
-    HashMap::new(),
-    |event| {
-        if let meshcore::events::EventPayload::Message(msg) = event.payload {
-            println!("Message from {:02x?}: {}", msg.sender_prefix, msg.text);
+#[tokio::main]
+async fn main() -> Result<(), meshcore_rs::Error> {
+    // Connect via serial port
+    let meshcore = MeshCore::serial("/dev/ttyUSB0", 115200).await?;
+
+    // Initialize connection and get device info
+    let info = meshcore.commands().lock().await.send_appstart().await?;
+    println!("Connected to: {}", info.name);
+
+    // Subscribe to incoming messages
+    let sub = meshcore.subscribe(
+        EventType::ContactMsgRecv,
+        HashMap::new(),
+        |event| {
+            if let meshcore_rs::events::EventPayload::ContactMessage(msg) = event.payload {
+                println!("Message from {:02x?}: {}", msg.sender_prefix, msg.text);
+            }
         }
-    }
-).await;
+    ).await;
 
-// Auto-fetch messages when device signals messages waiting
-meshcore.start_auto_message_fetching().await;
+    // Auto-fetch messages when device signals messages waiting
+    meshcore.start_auto_message_fetching().await;
 
-// Later, unsubscribe
-sub.unsubscribe().await;
+    // Keep main alive
+    tokio::signal::ctrl_c().await?;
+
+    // Later, unsubscribe
+    sub.unsubscribe().await;
+
+    meshcore.disconnect().await?;
+
+    Ok(())
+}
 ```
 
 ## API Overview
