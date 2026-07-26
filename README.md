@@ -1,4 +1,5 @@
 # MeshCore-rs
+
 [![codecov](https://codecov.io/gh/andrewdavidmackenzie/meshcore-rs/graph/badge.svg?token=cfyajKsYQa)](https://codecov.io/gh/andrewdavidmackenzie/meshcore-rs)
 
 Rust library for communicating with [MeshCore](https://meshcore.co.uk) companion radio nodes.
@@ -8,11 +9,11 @@ This is a Rust port of the [meshcore_py](https://github.com/meshcore-dev/meshcor
 ## Features
 
 - **Async/await** - Built on Tokio for async I/O
-- **Serial connection** - Connect via USB serial port
-- **TCP connection** - Connect via TCP socket
-- **BLE connection** - Connect via Bluetooth Low Energy (optional feature)
+- **Serial connection** – Connect via USB serial port
+- **TCP connection** – Connect via TCP socket
+- **BLE connection** – Connect via Bluetooth Low Energy (optional feature)
 - **Event-driven** - Subscribe to events with filters
-- **Full protocol support** - Contacts, messaging, binary protocol, signing, etc.
+- **Full protocol support** – Contacts, messaging, binary protocol, signing, etc.
 
 ## Installation
 
@@ -157,10 +158,10 @@ The library implements the MeshCore serial/TCP protocol:
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License
 
 ## Related Projects
 
-- [MeshCore](https://github.com/meshcore-dev/MeshCore) - Firmware for MeshCore devices
+- [MeshCore](https://github.com/meshcore-dev/MeshCore) – Firmware for MeshCore devices
 - [meshcore_py](https://github.com/meshcore-dev/meshcore_py) - Python library (original)
 - [meshcore-cli](https://github.com/meshcore-dev/meshcore-cli) - Command-line interface
