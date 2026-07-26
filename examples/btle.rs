@@ -18,6 +18,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect via BLE
     let radios = MeshCore::ble_discover(Duration::from_secs(4)).await?;
+
+    if radios.is_empty() {
+        eprintln!("No compatible meshcore radios found via BlueTooth Low Energy!");
+        return Ok(());
+    }
+
     let meshcore = MeshCore::ble_connect(radios.first().unwrap()).await?;
 
     println!("Connected via BLE!");
