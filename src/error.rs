@@ -10,6 +10,7 @@ pub enum Error {
     Connection(String),
 
     /// Serial port errors
+    #[cfg(feature = "serial")]
     #[error("Serial error: {0}")]
     Serial(#[from] tokio_serial::Error),
 

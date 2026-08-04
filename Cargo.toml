@@ -10,7 +10,7 @@ categories = ["network-programming", "embedded", "hardware-support"]
 
 [dependencies]
 tokio = { version = "1", features = ["full", "sync", "time", "io-util"] }
-tokio-serial = "5"
+tokio-serial = { version = "5", optional = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
 thiserror = "2"
 bytes = "1"
@@ -23,9 +23,16 @@ uuid = { version = "1" }
 
 [features]
 default = ["serial", "tcp", "ble"]
-serial = []
+serial = ["dep:tokio-serial"]
 tcp = []
 ble = ["btleplug"]
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Declared explicitly so `required-features` can be set; without it Cargo
+# auto-discovers this example and tries to build it even when `serial` is off,
+# where `MeshCore::serial` does not exist.
+[[example]]
+name = "serial_usb"
+required-features = ["serial"]
