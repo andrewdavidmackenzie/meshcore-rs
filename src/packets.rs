@@ -187,6 +187,87 @@ impl From<u8> for ControlType {
     }
 }
 
+/// Routing strategy of a MeshCore over-the-air packet, encoded in bits 0-1
+/// of the packet header byte carried inside raw packet captures (see
+/// [`crate::events::MeshPacketHeader`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum RouteType {
+    /// Flood-routed packet that also carries a transport code
+    TransportFlood = 0,
+    /// Flood-routed packet
+    Flood = 1,
+    /// Directly-routed packet along an explicit path
+    Direct = 2,
+    /// Directly-routed packet that also carries a transport code
+    TransportDirect = 3,
+}
+
+impl From<u8> for RouteType {
+    fn from(value: u8) -> Self {
+        match value & 0x03 {
+            0 => RouteType::TransportFlood,
+            1 => RouteType::Flood,
+            2 => RouteType::Direct,
+            _ => RouteType::TransportDirect,
+        }
+    }
+}
+
+/// Payload type of a MeshCore over-the-air packet, encoded in bits 2-5 of
+/// the packet header byte carried inside raw packet captures (see
+/// [`crate::events::MeshPacketHeader`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum PayloadType {
+    /// Request payload
+    Req = 0,
+    /// Response payload
+    Response = 1,
+    /// Direct text message
+    TextMsg = 2,
+    /// Acknowledgement
+    Ack = 3,
+    /// Node advertisement (broadcast identity)
+    Advert = 4,
+    /// Group/channel text message
+    GroupText = 5,
+    /// Group/channel data
+    GroupData = 6,
+    /// Anonymous request
+    AnonReq = 7,
+    /// Path/route information
+    Path = 8,
+    /// Trace packet
+    Trace = 9,
+    /// Multipart message fragment
+    Multipart = 10,
+    /// Control packet
+    Control = 11,
+    /// Unrecognized payload type
+    Unknown = 0xFF,
+}
+
+impl From<u8> for PayloadType {
+    fn from(value: u8) -> Self {
+        match value & 0x0F {
+            0 => PayloadType::Req,
+            1 => PayloadType::Response,
+            2 => PayloadType::TextMsg,
+            3 => PayloadType::Ack,
+            4 => PayloadType::Advert,
+            5 => PayloadType::GroupText,
+            6 => PayloadType::GroupData,
+            7 => PayloadType::AnonReq,
+            8 => PayloadType::Path,
+            9 => PayloadType::Trace,
+            10 => PayloadType::Multipart,
+            11 => PayloadType::Control,
+            _ => PayloadType::Unknown,
+        }
+    }
+}
+
 /// Frame start marker byte (app → radio, commands)
 pub const FRAME_START: u8 = 0x3c;
 
@@ -339,5 +420,48 @@ mod tests {
         let p1 = PacketType::SelfInfo;
         let p2 = p1;
         assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn test_route_type_from_u8() {
+        assert_eq!(RouteType::from(0), RouteType::TransportFlood);
+        assert_eq!(RouteType::from(1), RouteType::Flood);
+        assert_eq!(RouteType::from(2), RouteType::Direct);
+        assert_eq!(RouteType::from(3), RouteType::TransportDirect);
+    }
+
+    #[test]
+    fn test_route_type_from_u8_masks_upper_bits() {
+        // Only bits 0-1 are significant; upper bits must be ignored.
+        assert_eq!(RouteType::from(0b1111_1100), RouteType::TransportFlood);
+        assert_eq!(RouteType::from(0b1111_1101), RouteType::Flood);
+    }
+
+    #[test]
+    fn test_payload_type_from_u8() {
+        assert_eq!(PayloadType::from(0), PayloadType::Req);
+        assert_eq!(PayloadType::from(1), PayloadType::Response);
+        assert_eq!(PayloadType::from(2), PayloadType::TextMsg);
+        assert_eq!(PayloadType::from(3), PayloadType::Ack);
+        assert_eq!(PayloadType::from(4), PayloadType::Advert);
+        assert_eq!(PayloadType::from(5), PayloadType::GroupText);
+        assert_eq!(PayloadType::from(6), PayloadType::GroupData);
+        assert_eq!(PayloadType::from(7), PayloadType::AnonReq);
+        assert_eq!(PayloadType::from(8), PayloadType::Path);
+        assert_eq!(PayloadType::from(9), PayloadType::Trace);
+        assert_eq!(PayloadType::from(10), PayloadType::Multipart);
+        assert_eq!(PayloadType::from(11), PayloadType::Control);
+    }
+
+    #[test]
+    fn test_payload_type_from_u8_unknown() {
+        assert_eq!(PayloadType::from(12), PayloadType::Unknown);
+        assert_eq!(PayloadType::from(15), PayloadType::Unknown);
+    }
+
+    #[test]
+    fn test_payload_type_from_u8_masks_upper_bits() {
+        // Only bits 0-3 are significant; upper bits must be ignored.
+        assert_eq!(PayloadType::from(0b1111_0100), PayloadType::Advert);
     }
 }

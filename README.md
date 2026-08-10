@@ -107,6 +107,51 @@ async fn main() -> Result<(), meshcore_rs::Error> {
 }
 ```
 
+## RF Packet Monitoring
+
+The node pushes a `LogData` event automatically for **every** packet its
+radio receives, whether or not it was addressed to it — no configuration
+required. This is useful for building network visibility tools (coverage
+maps, traffic analysis, etc). The payload carries the signal quality, the
+decoded mesh packet header (route type, payload type, hop path) and, for
+advertisement packets, the advertiser's identity:
+
+```rust
+use meshcore_rs::{MeshCore, EventType};
+use meshcore_rs::events::EventPayload;
+use std::collections::HashMap;
+
+#[tokio::main]
+async fn main() -> Result<(), meshcore_rs::Error> {
+    let meshcore = MeshCore::serial("/dev/ttyUSB0", 115200).await?;
+    meshcore.commands().lock().await.send_appstart().await?;
+
+    let _sub = meshcore.subscribe(
+        EventType::LogData,
+        HashMap::new(),
+        |event| {
+            if let EventPayload::LogData(log) = event.payload {
+                println!("SNR {:.1} dB, RSSI {} dBm", log.snr, log.rssi);
+                if let Some(header) = log.header {
+                    println!("{:?} / {:?}, {} hop(s)", header.route_type, header.payload_type, header.path_len);
+                }
+            }
+        }
+    ).await;
+
+    tokio::signal::ctrl_c().await?;
+    meshcore.disconnect().await?;
+    Ok(())
+}
+```
+
+See `examples/rf_packet_monitor.rs` for a complete, runnable version.
+
+Note: `EventType::RawData` is a different, much narrower event — it only
+fires for directly-routed, not-yet-seen `RAW_CUSTOM` payloads sent by
+another application via the companion `SEND_RAW_DATA` command. Regular mesh
+traffic never triggers it; use `LogData` for general monitoring as above.
+
 ## API Overview
 
 ### Device Commands

@@ -2,9 +2,10 @@
 
 use crate::error::Error;
 use crate::events::{
-    AclEntry, ChannelMessage, Contact, ContactMessage, DeviceInfoData, MmaEntry, Neighbour,
-    NeighboursData, SelfInfo, StatusData,
+    AclEntry, ChannelMessage, Contact, ContactMessage, DeviceInfoData, MeshPacketHeader, MmaEntry,
+    Neighbour, NeighboursData, RawAdvertisement, SelfInfo, StatusData,
 };
+use crate::packets::{PayloadType, RouteType};
 use crate::Result;
 
 /// Read a little-endian u16 from a byte slice
@@ -589,6 +590,115 @@ pub fn parse_mma(data: &[u8]) -> Vec<MmaEntry> {
     }
 
     entries
+}
+
+/// Parse the MeshCore over-the-air packet header (route type, payload type
+/// and path) from the start of a buffer, as embedded in RAW_DATA/LOG_DATA
+/// captures.
+///
+/// Returns the decoded header together with the remaining, unparsed inner
+/// packet payload, or `None` if `data` is too short to contain a header and
+/// a path byte.
+pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])> {
+    if data.is_empty() {
+        return None;
+    }
+
+    let header_byte = data[0];
+    let route_type = RouteType::from(header_byte);
+    let payload_type = PayloadType::from(header_byte >> 2);
+    let payload_version = (header_byte & 0xc0) >> 6;
+
+    let mut offset = 1;
+
+    let transport_code = if matches!(
+        route_type,
+        RouteType::TransportFlood | RouteType::TransportDirect
+    ) {
+        let code: [u8; 4] = read_bytes(data, offset).ok()?;
+        offset += 4;
+        Some(code)
+    } else {
+        None
+    };
+
+    if offset >= data.len() {
+        return None;
+    }
+    let path_byte = data[offset];
+    offset += 1;
+
+    let path_hash_size = ((path_byte & 0xC0) >> 6) + 1;
+    let path_len = path_byte & 0x3F;
+    let path_bytes_len = path_len as usize * path_hash_size as usize;
+
+    if offset + path_bytes_len > data.len() {
+        return None;
+    }
+    let path = data[offset..offset + path_bytes_len].to_vec();
+    offset += path_bytes_len;
+
+    let header = MeshPacketHeader {
+        route_type,
+        payload_type,
+        payload_version,
+        transport_code,
+        path_len,
+        path_hash_size,
+        path,
+    };
+
+    Some((header, &data[offset..]))
+}
+
+/// Parse a raw ADVERT payload (public key, timestamp, signature, flags and
+/// optional location/name), as carried by a [`PayloadType::Advert`] packet.
+pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
+    // public_key(32) + timestamp(4) + signature(64) + flags(1)
+    const MIN_LEN: usize = 32 + 4 + 64 + 1;
+    if data.len() < MIN_LEN {
+        return None;
+    }
+
+    let public_key: [u8; 32] = read_bytes(data, 0).ok()?;
+    let timestamp = read_u32_le(data, 32).ok()?;
+    let signature: [u8; 64] = read_bytes(data, 36).ok()?;
+    let flags = data[100];
+    let adv_type = flags & 0x0F;
+
+    let mut offset = MIN_LEN;
+
+    let (lat, lon) = if flags & 0x10 != 0 && offset + 8 <= data.len() {
+        let lat = read_i32_le(data, offset).ok()?;
+        let lon = read_i32_le(data, offset + 4).ok()?;
+        offset += 8;
+        (Some(lat), Some(lon))
+    } else {
+        (None, None)
+    };
+
+    if flags & 0x20 != 0 {
+        offset += 2; // feature1, not currently decoded
+    }
+    if flags & 0x40 != 0 {
+        offset += 2; // feature2, not currently decoded
+    }
+
+    let name = if flags & 0x80 != 0 && data.len() > offset {
+        Some(read_string(data, offset, data.len() - offset))
+    } else {
+        None
+    };
+
+    Some(RawAdvertisement {
+        public_key,
+        timestamp,
+        signature,
+        adv_type,
+        lat,
+        lon,
+        name,
+    })
 }
 
 /// Encode coordinates as microdegrees
@@ -1235,5 +1345,118 @@ mod tests {
         let info = parse_device_info(&data);
         // 200 * 2 would overflow u8, but we use saturating_mul
         assert_eq!(info.max_contacts, Some(255)); // Saturated
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_flood_no_transport() {
+        // route=Flood(1), payload_type=TextMsg(2), payload_ver=0
+        let header_byte: u8 = (2 << 2) | 1;
+        // path_hash_size=1 (bits 6-7 = 0b00), path_len=2
+        let path_byte = 0b00_000010;
+        let data = [header_byte, path_byte, 0xAA, 0xBB, 0xCC, 0xDD];
+
+        let (header, remaining) = parse_mesh_packet_header(&data).unwrap();
+        assert_eq!(header.route_type, RouteType::Flood);
+        assert_eq!(header.payload_type, PayloadType::TextMsg);
+        assert_eq!(header.payload_version, 0);
+        assert!(header.transport_code.is_none());
+        assert_eq!(header.path_len, 2);
+        assert_eq!(header.path_hash_size, 1);
+        assert_eq!(header.path, vec![0xAA, 0xBB]);
+        assert_eq!(remaining, &[0xCC, 0xDD]);
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_with_transport_code() {
+        // route=TransportFlood(0), payload_type=Advert(4), payload_ver=1
+        let header_byte = (1u8 << 6) | (4 << 2);
+        // path_hash_size=2 (bits 6-7 = 0b01 -> +1), path_len=1
+        let path_byte = 0b01_000001;
+        let data = [
+            header_byte, // header
+            0x11,
+            0x22,
+            0x33,
+            0x44,      // transport code
+            path_byte, // path descriptor
+            0x01,
+            0x02, // path (1 hop * 2 bytes)
+            0x99, // remaining inner payload
+        ];
+
+        let (header, remaining) = parse_mesh_packet_header(&data).unwrap();
+        assert_eq!(header.route_type, RouteType::TransportFlood);
+        assert_eq!(header.payload_type, PayloadType::Advert);
+        assert_eq!(header.payload_version, 1);
+        assert_eq!(header.transport_code, Some([0x11, 0x22, 0x33, 0x44]));
+        assert_eq!(header.path_len, 1);
+        assert_eq!(header.path_hash_size, 2);
+        assert_eq!(header.path, vec![0x01, 0x02]);
+        assert_eq!(remaining, &[0x99]);
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_empty() {
+        assert!(parse_mesh_packet_header(&[]).is_none());
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_missing_path_byte() {
+        // Direct route, no transport code, but no path byte follows
+        let data = [2u8];
+        assert!(parse_mesh_packet_header(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_path_truncated() {
+        // path_len=5, path_hash_size=1 declared, but no path bytes follow
+        let data = [1u8, 0b00_000101];
+        assert!(parse_mesh_packet_header(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_missing_transport_code() {
+        // TransportDirect route requires a 4-byte transport code that isn't present
+        let data = [3u8, 0x11, 0x22];
+        assert!(parse_mesh_packet_header(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_raw_advertisement_with_name() {
+        let mut data = vec![0u8; 101];
+        data[0..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // pubkey prefix
+        data[32..36].copy_from_slice(&123456u32.to_le_bytes()); // timestamp
+        data[36..40].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]); // signature prefix
+        data[100] = 0x80; // flags: has name only
+        data.extend_from_slice(b"Node1");
+
+        let adv = parse_raw_advertisement(&data).unwrap();
+        assert_eq!(&adv.public_key[0..6], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        assert_eq!(adv.timestamp, 123456);
+        assert_eq!(&adv.signature[0..4], &[0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(adv.adv_type, 0);
+        assert!(adv.lat.is_none());
+        assert!(adv.lon.is_none());
+        assert_eq!(adv.name.as_deref(), Some("Node1"));
+    }
+
+    #[test]
+    fn test_parse_raw_advertisement_with_location() {
+        let mut data = vec![0u8; 101];
+        data[100] = 0x11; // flags: adv_type=1, has location
+        data.extend_from_slice(&37774900i32.to_le_bytes());
+        data.extend_from_slice(&(-122419400i32).to_le_bytes());
+
+        let adv = parse_raw_advertisement(&data).unwrap();
+        assert_eq!(adv.adv_type, 1);
+        assert_eq!(adv.lat, Some(37774900));
+        assert_eq!(adv.lon, Some(-122419400));
+        assert!(adv.name.is_none());
+    }
+
+    #[test]
+    fn test_parse_raw_advertisement_too_short() {
+        let data = vec![0u8; 50];
+        assert!(parse_raw_advertisement(&data).is_none());
     }
 }

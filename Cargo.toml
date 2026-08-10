@@ -36,3 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [[example]]
 name = "serial_usb"
 required-features = ["serial"]
+
+[[example]]
+name = "rf_packet_monitor"
+required-features = ["serial"]

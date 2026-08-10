@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use crate::events::*;
-use crate::packets::{BinaryReqType, ControlType, PacketType};
+use crate::packets::{BinaryReqType, ControlType, PacketType, PayloadType};
 use crate::parsing::*;
 use crate::{Result, CHANNEL_INFO_LEN, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
 
@@ -651,28 +651,84 @@ impl MessageReader {
             PacketType::PathDiscovery => {}
             PacketType::SetFloodScope => {}
             PacketType::SendControlData => {}
-            PacketType::RawData => {}
-            PacketType::LogData => {
-                // LOG_DATA format:
+            PacketType::RawData => {
+                // RAW_DATA push: reports a packet the node overheard "on
+                // air" (not necessarily addressed to or relayed by it).
                 // Byte 0: SNR (signed byte, divide by 4.0)
                 // Byte 1: RSSI (signed byte)
-                // Bytes 2+: Raw RF payload
+                // Byte 2: reserved
+                // Bytes 3+: the raw mesh packet, starting with its header byte
+                // See meshcore_py reader.py PacketType.RAW_DATA and
+                // meshcore_parser.py parsePacketPayload for the reference
+                // implementation this is ported from.
                 if payload.len() >= 2 {
                     let snr_byte = payload[0] as i8;
                     let snr = snr_byte as f32 / 4.0;
-
                     let rssi = payload[1] as i8 as i16;
 
-                    let rf_payload = if payload.len() > 2 {
-                        payload[2..].to_vec()
+                    let packet = if payload.len() > 3 {
+                        &payload[3..]
                     } else {
-                        Vec::new()
+                        &[] as &[u8]
                     };
+
+                    let (header, inner_payload) = match parse_mesh_packet_header(packet) {
+                        Some((header, remaining)) => (Some(header), remaining),
+                        None => (None, packet),
+                    };
+
+                    let advertisement = header
+                        .as_ref()
+                        .filter(|h| h.payload_type == PayloadType::Advert)
+                        .and_then(|_| parse_raw_advertisement(inner_payload));
+
+                    let raw_data = RawPacketData {
+                        snr,
+                        rssi,
+                        header,
+                        advertisement,
+                        payload: inner_payload.to_vec(),
+                    };
+
+                    let event =
+                        MeshCoreEvent::new(EventType::RawData, EventPayload::RawData(raw_data));
+                    self.dispatcher.emit(event).await;
+                }
+            }
+            PacketType::LogData => {
+                // LOG_DATA: pushed unconditionally for every packet the
+                // radio receives (Dispatcher::checkRecv() -> logRxRaw()),
+                // regardless of payload type or routing. Format:
+                // Byte 0: SNR (signed byte, divide by 4.0)
+                // Byte 1: RSSI (signed byte)
+                // Bytes 2+: the raw mesh packet, starting with its header byte
+                if payload.len() >= 2 {
+                    let snr_byte = payload[0] as i8;
+                    let snr = snr_byte as f32 / 4.0;
+                    let rssi = payload[1] as i8 as i16;
+
+                    let packet = if payload.len() > 2 {
+                        &payload[2..]
+                    } else {
+                        &[] as &[u8]
+                    };
+
+                    let (header, inner_payload) = match parse_mesh_packet_header(packet) {
+                        Some((header, remaining)) => (Some(header), remaining),
+                        None => (None, packet),
+                    };
+
+                    let advertisement = header
+                        .as_ref()
+                        .filter(|h| h.payload_type == PayloadType::Advert)
+                        .and_then(|_| parse_raw_advertisement(inner_payload));
 
                     let log_data = LogData {
                         snr,
                         rssi,
-                        payload: rf_payload,
+                        header,
+                        advertisement,
+                        payload: inner_payload.to_vec(),
                     };
                     let event =
                         MeshCoreEvent::new(EventType::LogData, EventPayload::LogData(log_data));
@@ -695,6 +751,7 @@ impl MessageReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packets::RouteType;
     use std::time::Duration;
 
     fn create_reader() -> (MessageReader, Arc<EventDispatcher>) {
@@ -2316,6 +2373,229 @@ mod tests {
         match event.payload {
             EventPayload::Contacts(contacts) => assert_eq!(contacts.len(), 1),
             _ => panic!("Expected Contacts payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_raw_data_text_msg() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::RawData as u8];
+        data.push(40); // snr_raw = 40, SNR = 10.0
+        data.push((-70i8) as u8); // rssi = -70
+        data.push(0xFF); // reserved
+
+        // Mesh packet: route=Flood(1), payload_type=TextMsg(2), payload_ver=0
+        data.push((2 << 2) | 1);
+        // path: hash_size=1, path_len=2
+        data.push(0b00_000010);
+        data.extend_from_slice(&[0xAA, 0xBB]); // path
+        data.extend_from_slice(&[0x01, 0x02, 0x03]); // opaque inner payload
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::RawData);
+        match event.payload {
+            EventPayload::RawData(raw) => {
+                assert_eq!(raw.snr, 10.0);
+                assert_eq!(raw.rssi, -70);
+                let header = raw.header.expect("expected a decoded header");
+                assert_eq!(header.route_type, RouteType::Flood);
+                assert_eq!(header.payload_type, PayloadType::TextMsg);
+                assert_eq!(header.path_len, 2);
+                assert_eq!(header.path, vec![0xAA, 0xBB]);
+                assert!(raw.advertisement.is_none());
+                assert_eq!(raw.payload, vec![0x01, 0x02, 0x03]);
+            }
+            _ => panic!("Expected RawData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_raw_data_advert_decodes_advertiser() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::RawData as u8];
+        data.push(20); // snr_raw = 20, SNR = 5.0
+        data.push((-90i8) as u8); // rssi = -90
+        data.push(0xFF); // reserved
+
+        // Mesh packet: route=Flood(1), payload_type=Advert(4), payload_ver=0
+        data.push((4 << 2) | 1);
+        data.push(0b00_000000); // no path hops
+
+        // ADVERT inner payload: pubkey(32) + timestamp(4) + signature(64) + flags(1)
+        data.extend_from_slice(&[0xAB; 32]); // pubkey
+        data.extend_from_slice(&999u32.to_le_bytes()); // timestamp
+        data.extend_from_slice(&[0xCD; 64]); // signature
+        data.push(0x80); // flags: has name only
+        data.extend_from_slice(b"Repeater1");
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::RawData);
+        match event.payload {
+            EventPayload::RawData(raw) => {
+                let header = raw.header.expect("expected a decoded header");
+                assert_eq!(header.payload_type, PayloadType::Advert);
+                let adv = raw.advertisement.expect("expected a decoded advertiser");
+                assert_eq!(adv.public_key, [0xAB; 32]);
+                assert_eq!(adv.timestamp, 999);
+                assert_eq!(adv.name.as_deref(), Some("Repeater1"));
+            }
+            _ => panic!("Expected RawData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_raw_data_snr_rssi_only() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Only SNR + RSSI, no reserved byte or packet bytes at all
+        let data = vec![PacketType::RawData as u8, 40, (-70i8) as u8];
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::RawData);
+        match event.payload {
+            EventPayload::RawData(raw) => {
+                assert_eq!(raw.snr, 10.0);
+                assert_eq!(raw.rssi, -70);
+                assert!(raw.header.is_none());
+                assert!(raw.payload.is_empty());
+            }
+            _ => panic!("Expected RawData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_raw_data_too_short() {
+        let (reader, _dispatcher) = create_reader();
+
+        // Less than the 2 bytes required for SNR + RSSI: silently dropped,
+        // matching every other lenient push-notification handler above.
+        let result = reader.handle_rx(vec![PacketType::RawData as u8, 40]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_log_data_decodes_header() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::LogData as u8];
+        data.push(40); // snr_raw = 40, SNR = 10.0
+        data.push((-70i8) as u8); // rssi = -70
+                                  // no reserved byte here, unlike RAW_DATA
+
+        // Mesh packet: route=Direct(2), payload_type=Ack(3), payload_ver=0
+        data.push((3 << 2) | 2);
+        data.push(0b00_000000); // no path hops
+        data.extend_from_slice(&[0xEE, 0xFF]); // opaque inner payload
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::LogData);
+        match event.payload {
+            EventPayload::LogData(log) => {
+                assert_eq!(log.snr, 10.0);
+                assert_eq!(log.rssi, -70);
+                let header = log.header.expect("expected a decoded header");
+                assert_eq!(header.route_type, RouteType::Direct);
+                assert_eq!(header.payload_type, PayloadType::Ack);
+                assert!(log.advertisement.is_none());
+                assert_eq!(log.payload, vec![0xEE, 0xFF]);
+            }
+            _ => panic!("Expected LogData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_log_data_advert_decodes_advertiser() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::LogData as u8];
+        data.push(20); // snr_raw = 20, SNR = 5.0
+        data.push((-90i8) as u8); // rssi = -90
+
+        // Mesh packet: route=Flood(1), payload_type=Advert(4), payload_ver=0
+        data.push((4 << 2) | 1);
+        data.push(0b00_000000); // no path hops
+
+        data.extend_from_slice(&[0x11; 32]); // pubkey
+        data.extend_from_slice(&42u32.to_le_bytes()); // timestamp
+        data.extend_from_slice(&[0x22; 64]); // signature
+        data.push(0x80); // flags: has name only
+        data.extend_from_slice(b"Node2");
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::LogData);
+        match event.payload {
+            EventPayload::LogData(log) => {
+                let header = log.header.expect("expected a decoded header");
+                assert_eq!(header.payload_type, PayloadType::Advert);
+                let adv = log.advertisement.expect("expected a decoded advertiser");
+                assert_eq!(adv.public_key, [0x11; 32]);
+                assert_eq!(adv.name.as_deref(), Some("Node2"));
+            }
+            _ => panic!("Expected LogData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_log_data_snr_rssi_only() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Only SNR + RSSI, no packet bytes at all
+        let data = vec![PacketType::LogData as u8, 40, (-70i8) as u8];
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::LogData);
+        match event.payload {
+            EventPayload::LogData(log) => {
+                assert_eq!(log.snr, 10.0);
+                assert_eq!(log.rssi, -70);
+                assert!(log.header.is_none());
+                assert!(log.payload.is_empty());
+            }
+            _ => panic!("Expected LogData payload"),
         }
     }
 }
