@@ -9,7 +9,13 @@ keywords = ["meshcore", "lora", "mesh", "radio"]
 categories = ["network-programming", "embedded", "hardware-support"]
 
 [dependencies]
-tokio = { version = "1", features = ["full", "sync", "time", "io-util"] }
+# Baseline needed unconditionally by the core reader/dispatcher/command
+# handler: sync primitives (broadcast/mpsc/Mutex/RwLock), timeouts
+# (tokio::time + the `select!` macro in wait_for_event/wait_for_any_event),
+# and `rt` for the JoinHandle type + tokio::spawn used to drive transports.
+# `io-util` (AsyncRead/Write helpers) and `net` (TcpStream) are only pulled
+# in by the transports that actually need them, see [features] below.
+tokio = { version = "1", default-features = false, features = ["sync", "time", "macros", "rt"] }
 tokio-serial = { version = "5", optional = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
 thiserror = "2"
@@ -23,12 +29,18 @@ uuid = { version = "1" }
 
 [features]
 default = ["serial", "tcp", "ble"]
-serial = ["dep:tokio-serial"]
-tcp = []
+serial = ["dep:tokio-serial", "tokio/io-util"]
+tcp = ["tokio/net", "tokio/io-util"]
 ble = ["btleplug"]
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Examples and doctests use `#[tokio::main]`/`#[tokio::test]` and
+# `tokio::signal::ctrl_c()`; the crate's own baseline `rt` feature only
+# unlocks the current-thread runtime, so building/running them needs
+# `rt-multi-thread` and `signal` on top. This does not affect downstream
+# consumers: dev-dependency features never propagate to them.
+tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
 
 # Declared explicitly so `required-features` can be set; without it Cargo
 # auto-discovers this example and tries to build it even when `serial` is off,
