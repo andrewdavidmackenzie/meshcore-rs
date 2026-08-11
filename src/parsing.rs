@@ -1457,6 +1457,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_raw_advertisement_skips_unknown_feature_blocks() {
+        // flags: feature1 (0x20) + feature2 (0x40) + name (0x80), no
+        // location. Each feature block is 2 bytes we don't decode but must
+        // still skip correctly, otherwise the name would be read from the
+        // wrong offset (garbled, or misaligned into the feature bytes).
+        let mut data = vec![0u8; 101];
+        data[100] = 0x20 | 0x40 | 0x80;
+        data.extend_from_slice(&[0xAA, 0xAA]); // feature1, skipped
+        data.extend_from_slice(&[0xBB, 0xBB]); // feature2, skipped
+        data.extend_from_slice(b"Node2");
+
+        let adv = parse_raw_advertisement(&data).unwrap();
+        assert!(adv.lat.is_none());
+        assert!(adv.lon.is_none());
+        assert_eq!(adv.name.as_deref(), Some("Node2"));
+    }
+
+    #[test]
     fn test_parse_raw_advertisement_too_short() {
         let data = vec![0u8; 50];
         assert!(parse_raw_advertisement(&data).is_none());
