@@ -112,7 +112,7 @@ async fn main() -> Result<(), meshcore_rs::Error> {
 The node pushes a `LogData` event automatically for **every** packet its
 radio receives, whether or not it was addressed to it — no configuration
 required. This is useful for building network visibility tools (coverage
-maps, traffic analysis, etc). The payload carries the signal quality, the
+maps, traffic analysis, etc.). The payload carries the signal quality, the
 decoded mesh packet header (route type, payload type, hop path) and, for
 advertisement packets, the advertiser's identity:
 

@@ -668,7 +668,9 @@ pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
 
     let mut offset = MIN_LEN;
 
-    let (lat, lon) = if flags & 0x10 != 0 && offset + 8 <= data.len() {
+    let (lat, lon) = if flags & 0x10 != 0 {
+        // A declared location that does not fit means the capture is
+        // truncated; every later offset would be wrong.
         let lat = read_i32_le(data, offset).ok()?;
         let lon = read_i32_le(data, offset + 4).ok()?;
         offset += 8;
@@ -1457,6 +1459,19 @@ mod tests {
     #[test]
     fn test_parse_raw_advertisement_too_short() {
         let data = vec![0u8; 50];
+        assert!(parse_raw_advertisement(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_raw_advertisement_truncated_location_fails() {
+        // flags: has location (0x10) and name (0x80), but only 4 trailing
+        // bytes — not enough for the 8-byte lat/lon. Must be rejected as a
+        // parse failure rather than silently misreading the name from
+        // inside the truncated location bytes.
+        let mut data = vec![0u8; 101];
+        data[100] = 0x90;
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+
         assert!(parse_raw_advertisement(&data).is_none());
     }
 }

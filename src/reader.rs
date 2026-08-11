@@ -652,8 +652,10 @@ impl MessageReader {
             PacketType::SetFloodScope => {}
             PacketType::SendControlData => {}
             PacketType::RawData => {
-                // RAW_DATA push: reports a packet the node overheard "on
-                // air" (not necessarily addressed to or relayed by it).
+                // RAW_DATA push: emitted only for directly-routed,
+                // not-yet-seen RAW_CUSTOM packets addressed to this node.
+                // See `RawPacketData` for the full semantics; use LOG_DATA
+                // to observe every received packet.
                 // Byte 0: SNR (signed byte, divide by 4.0)
                 // Byte 1: RSSI (signed byte)
                 // Byte 2: reserved

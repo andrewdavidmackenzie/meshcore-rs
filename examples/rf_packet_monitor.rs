@@ -14,7 +14,7 @@
 //! observe general network activity.
 //!
 //! Usage:
-//!   cargo run --example rf_packet_monitor -- [serial-port]
+//!   cargo run --example rf_packet_monitor --features serial -- [serial-port]
 
 use meshcore_rs::events::EventPayload;
 use meshcore_rs::{EventType, MeshCore, PayloadType, RouteType};
