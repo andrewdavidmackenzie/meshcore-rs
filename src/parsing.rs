@@ -604,6 +604,8 @@ pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])
         return None;
     }
 
+    // Header byte layout: bits 0-1 = route type, bits 2-5 = payload type,
+    // bits 6-7 = payload format version.
     let header_byte = data[0];
     let route_type = RouteType::from(header_byte);
     let payload_type = PayloadType::from(header_byte >> 2);
@@ -654,39 +656,57 @@ pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])
 /// Parse a raw ADVERT payload (public key, timestamp, signature, flags and
 /// optional location/name), as carried by a [`PayloadType::Advert`] packet.
 pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
-    // public_key(32) + timestamp(4) + signature(64) + flags(1)
-    const MIN_LEN: usize = 32 + 4 + 64 + 1;
+    const PUBLIC_KEY_LEN: usize = 32;
+    const TIMESTAMP_LEN: usize = 4;
+    const SIGNATURE_LEN: usize = 64;
+    const FLAGS_LEN: usize = 1;
+
+    const TIMESTAMP_OFFSET: usize = PUBLIC_KEY_LEN;
+    const SIGNATURE_OFFSET: usize = TIMESTAMP_OFFSET + TIMESTAMP_LEN;
+    const FLAGS_OFFSET: usize = SIGNATURE_OFFSET + SIGNATURE_LEN;
+    const MIN_LEN: usize = FLAGS_OFFSET + FLAGS_LEN;
+
+    // Flag bits of the byte at FLAGS_OFFSET.
+    const FLAG_ADV_TYPE_MASK: u8 = 0x0F; // advertiser type (see Contact::contact_type)
+    const FLAG_HAS_LOCATION: u8 = 0x10; // 8 bytes: lat (i32 LE) + lon (i32 LE)
+    const FLAG_HAS_FEATURE1: u8 = 0x20; // 2 bytes, not currently decoded
+    const FLAG_HAS_FEATURE2: u8 = 0x40; // 2 bytes, not currently decoded
+    const FLAG_HAS_NAME: u8 = 0x80; // remaining bytes, UTF-8 name
+
+    const LOCATION_LEN: usize = 8;
+    const FEATURE_BLOCK_LEN: usize = 2;
+
     if data.len() < MIN_LEN {
         return None;
     }
 
     let public_key: [u8; 32] = read_bytes(data, 0).ok()?;
-    let timestamp = read_u32_le(data, 32).ok()?;
-    let signature: [u8; 64] = read_bytes(data, 36).ok()?;
-    let flags = data[100];
-    let adv_type = flags & 0x0F;
+    let timestamp = read_u32_le(data, TIMESTAMP_OFFSET).ok()?;
+    let signature: [u8; 64] = read_bytes(data, SIGNATURE_OFFSET).ok()?;
+    let flags = data[FLAGS_OFFSET];
+    let adv_type = flags & FLAG_ADV_TYPE_MASK;
 
     let mut offset = MIN_LEN;
 
-    let (lat, lon) = if flags & 0x10 != 0 {
+    let (lat, lon) = if flags & FLAG_HAS_LOCATION != 0 {
         // A declared location that does not fit means the capture is
         // truncated; every later offset would be wrong.
         let lat = read_i32_le(data, offset).ok()?;
         let lon = read_i32_le(data, offset + 4).ok()?;
-        offset += 8;
+        offset += LOCATION_LEN;
         (Some(lat), Some(lon))
     } else {
         (None, None)
     };
 
-    if flags & 0x20 != 0 {
-        offset += 2; // feature1, not currently decoded
+    if flags & FLAG_HAS_FEATURE1 != 0 {
+        offset += FEATURE_BLOCK_LEN;
     }
-    if flags & 0x40 != 0 {
-        offset += 2; // feature2, not currently decoded
+    if flags & FLAG_HAS_FEATURE2 != 0 {
+        offset += FEATURE_BLOCK_LEN;
     }
 
-    let name = if flags & 0x80 != 0 && data.len() > offset {
+    let name = if flags & FLAG_HAS_NAME != 0 && data.len() > offset {
         Some(read_string(data, offset, data.len() - offset))
     } else {
         None
