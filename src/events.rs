@@ -562,7 +562,7 @@ pub enum StatsCategory {
 /// node's radio receives (see [`crate::EventType::LogData`]), regardless of
 /// whether the packet was addressed to it. Unlike [`RawPacketData`], no
 /// specific payload type or routing is required to trigger this.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LogData {
     /// Signal-to-noise ratio (signed byte / 4.0)
     pub snr: f32,
@@ -1522,9 +1522,8 @@ mod tests {
         let _log_data = EventPayload::LogData(LogData {
             snr: 10.5,
             rssi: -80,
-            header: None,
-            advertisement: None,
             payload: vec![0x01, 0x02, 0x03],
+            ..Default::default()
         });
     }
 
@@ -1533,9 +1532,8 @@ mod tests {
         let log_data = LogData {
             snr: 12.25,
             rssi: -75,
-            header: None,
-            advertisement: None,
             payload: vec![0xAA, 0xBB, 0xCC],
+            ..Default::default()
         };
         let cloned = log_data.clone();
         assert_eq!(cloned.snr, 12.25);
@@ -1548,9 +1546,8 @@ mod tests {
         let log_data = LogData {
             snr: 5.5,
             rssi: -90,
-            header: None,
-            advertisement: None,
             payload: vec![0x01, 0x02],
+            ..Default::default()
         };
         let debug_str = format!("{:?}", log_data);
         assert!(debug_str.contains("snr"));
@@ -1565,9 +1562,7 @@ mod tests {
         let log_data = LogData {
             snr: 10.0, // Would be byte value 40
             rssi: -85,
-            header: None,
-            advertisement: None,
-            payload: vec![],
+            ..Default::default()
         };
         assert_eq!(log_data.snr, 10.0);
     }
@@ -1577,22 +1572,15 @@ mod tests {
         let log_data = LogData {
             snr: -5.25, // Would be byte value -21
             rssi: -100,
-            header: None,
-            advertisement: None,
             payload: vec![0x01],
+            ..Default::default()
         };
         assert_eq!(log_data.snr, -5.25);
     }
 
     #[test]
     fn test_log_data_empty_payload() {
-        let log_data = LogData {
-            snr: 0.0,
-            rssi: 0,
-            header: None,
-            advertisement: None,
-            payload: vec![],
-        };
+        let log_data = LogData::default();
         assert!(log_data.payload.is_empty());
     }
 }
