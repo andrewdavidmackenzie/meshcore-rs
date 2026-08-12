@@ -592,6 +592,13 @@ pub fn parse_mma(data: &[u8]) -> Vec<MmaEntry> {
     entries
 }
 
+/// Bit position of the payload type field within a packet header byte (see
+/// `parse_mesh_packet_header`); route type occupies bits 0-1 below it.
+const PAYLOAD_TYPE_SHIFT: u8 = 2;
+/// Bit position of the payload format version field within a packet header
+/// byte.
+const PAYLOAD_VERSION_SHIFT: u8 = 6;
+
 /// Parse the MeshCore over-the-air packet header (route type, payload type
 /// and path) from the start of a buffer, as embedded in RAW_DATA/LOG_DATA
 /// captures.
@@ -608,8 +615,8 @@ pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])
     // bits 6-7 = payload format version.
     let header_byte = data[0];
     let route_type = RouteType::from(header_byte);
-    let payload_type = PayloadType::from(header_byte >> 2);
-    let payload_version = (header_byte & 0xc0) >> 6;
+    let payload_type = PayloadType::from(header_byte >> PAYLOAD_TYPE_SHIFT);
+    let payload_version = (header_byte & 0xc0) >> PAYLOAD_VERSION_SHIFT;
 
     let mut offset = 1;
 
@@ -653,29 +660,31 @@ pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])
     Some((header, &data[offset..]))
 }
 
+const PUBLIC_KEY_LEN: usize = 32;
+const TIMESTAMP_LEN: usize = 4;
+const SIGNATURE_LEN: usize = 64;
+const FLAGS_LEN: usize = 1;
+
+const TIMESTAMP_OFFSET: usize = PUBLIC_KEY_LEN;
+const SIGNATURE_OFFSET: usize = TIMESTAMP_OFFSET + TIMESTAMP_LEN;
+const FLAGS_OFFSET: usize = SIGNATURE_OFFSET + SIGNATURE_LEN;
+/// Minimum length of a raw ADVERT payload (public key + timestamp +
+/// signature + flags), before any of the optional trailing fields.
+const MIN_LEN: usize = FLAGS_OFFSET + FLAGS_LEN;
+
+// Flag bits of the byte at FLAGS_OFFSET.
+const FLAG_ADV_TYPE_MASK: u8 = 0x0F; // advertiser type (see Contact::contact_type)
+const FLAG_HAS_LOCATION: u8 = 0x10; // 8 bytes: lat (i32 LE) + lon (i32 LE)
+const FLAG_HAS_FEATURE1: u8 = 0x20; // 2 bytes, not currently decoded
+const FLAG_HAS_FEATURE2: u8 = 0x40; // 2 bytes, not currently decoded
+const FLAG_HAS_NAME: u8 = 0x80; // remaining bytes, UTF-8 name
+
+const LOCATION_LEN: usize = 8;
+const FEATURE_BLOCK_LEN: usize = 2;
+
 /// Parse a raw ADVERT payload (public key, timestamp, signature, flags and
 /// optional location/name), as carried by a [`PayloadType::Advert`] packet.
 pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
-    const PUBLIC_KEY_LEN: usize = 32;
-    const TIMESTAMP_LEN: usize = 4;
-    const SIGNATURE_LEN: usize = 64;
-    const FLAGS_LEN: usize = 1;
-
-    const TIMESTAMP_OFFSET: usize = PUBLIC_KEY_LEN;
-    const SIGNATURE_OFFSET: usize = TIMESTAMP_OFFSET + TIMESTAMP_LEN;
-    const FLAGS_OFFSET: usize = SIGNATURE_OFFSET + SIGNATURE_LEN;
-    const MIN_LEN: usize = FLAGS_OFFSET + FLAGS_LEN;
-
-    // Flag bits of the byte at FLAGS_OFFSET.
-    const FLAG_ADV_TYPE_MASK: u8 = 0x0F; // advertiser type (see Contact::contact_type)
-    const FLAG_HAS_LOCATION: u8 = 0x10; // 8 bytes: lat (i32 LE) + lon (i32 LE)
-    const FLAG_HAS_FEATURE1: u8 = 0x20; // 2 bytes, not currently decoded
-    const FLAG_HAS_FEATURE2: u8 = 0x40; // 2 bytes, not currently decoded
-    const FLAG_HAS_NAME: u8 = 0x80; // remaining bytes, UTF-8 name
-
-    const LOCATION_LEN: usize = 8;
-    const FEATURE_BLOCK_LEN: usize = 2;
-
     if data.len() < MIN_LEN {
         return None;
     }
@@ -1371,8 +1380,9 @@ mod tests {
 
     #[test]
     fn test_parse_mesh_packet_header_flood_no_transport() {
-        // route=Flood(1), payload_type=TextMsg(2), payload_ver=0
-        let header_byte: u8 = (2 << 2) | 1;
+        // route=Flood, payload_type=TextMsg, payload_ver=0
+        let header_byte: u8 =
+            ((PayloadType::TextMsg as u8) << PAYLOAD_TYPE_SHIFT) | RouteType::Flood as u8;
         // path_hash_size=1 (bits 6-7 = 0b00), path_len=2
         let path_byte = 0b00_000010;
         let data = [header_byte, path_byte, 0xAA, 0xBB, 0xCC, 0xDD];
@@ -1390,8 +1400,10 @@ mod tests {
 
     #[test]
     fn test_parse_mesh_packet_header_with_transport_code() {
-        // route=TransportFlood(0), payload_type=Advert(4), payload_ver=1
-        let header_byte = (1u8 << 6) | (4 << 2);
+        // route=TransportFlood, payload_type=Advert, payload_ver=1
+        let header_byte = (1u8 << PAYLOAD_VERSION_SHIFT)
+            | ((PayloadType::Advert as u8) << PAYLOAD_TYPE_SHIFT)
+            | RouteType::TransportFlood as u8;
         // path_hash_size=2 (bits 6-7 = 0b01 -> +1), path_len=1
         let path_byte = 0b01_000001;
         let data = [
@@ -1445,11 +1457,11 @@ mod tests {
 
     #[test]
     fn test_parse_raw_advertisement_with_name() {
-        let mut data = vec![0u8; 101];
+        let mut data = vec![0u8; MIN_LEN];
         data[0..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // pubkey prefix
-        data[32..36].copy_from_slice(&123456u32.to_le_bytes()); // timestamp
-        data[36..40].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]); // signature prefix
-        data[100] = 0x80; // flags: has name only
+        data[TIMESTAMP_OFFSET..TIMESTAMP_OFFSET + 4].copy_from_slice(&123456u32.to_le_bytes());
+        data[SIGNATURE_OFFSET..SIGNATURE_OFFSET + 4].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]); // signature prefix
+        data[FLAGS_OFFSET] = FLAG_HAS_NAME;
         data.extend_from_slice(b"Node1");
 
         let adv = parse_raw_advertisement(&data).unwrap();
@@ -1464,8 +1476,8 @@ mod tests {
 
     #[test]
     fn test_parse_raw_advertisement_with_location() {
-        let mut data = vec![0u8; 101];
-        data[100] = 0x11; // flags: adv_type=1, has location
+        let mut data = vec![0u8; MIN_LEN];
+        data[FLAGS_OFFSET] = 1 | FLAG_HAS_LOCATION; // adv_type=1, has location
         data.extend_from_slice(&37774900i32.to_le_bytes());
         data.extend_from_slice(&(-122419400i32).to_le_bytes());
 
@@ -1478,12 +1490,12 @@ mod tests {
 
     #[test]
     fn test_parse_raw_advertisement_skips_unknown_feature_blocks() {
-        // flags: feature1 (0x20) + feature2 (0x40) + name (0x80), no
-        // location. Each feature block is 2 bytes we don't decode but must
-        // still skip correctly, otherwise the name would be read from the
-        // wrong offset (garbled, or misaligned into the feature bytes).
-        let mut data = vec![0u8; 101];
-        data[100] = 0x20 | 0x40 | 0x80;
+        // flags: feature1 + feature2 + name, no location. Each feature
+        // block is 2 bytes we don't decode but must still skip correctly,
+        // otherwise the name would be read from the wrong offset (garbled,
+        // or misaligned into the feature bytes).
+        let mut data = vec![0u8; MIN_LEN];
+        data[FLAGS_OFFSET] = FLAG_HAS_FEATURE1 | FLAG_HAS_FEATURE2 | FLAG_HAS_NAME;
         data.extend_from_slice(&[0xAA, 0xAA]); // feature1, skipped
         data.extend_from_slice(&[0xBB, 0xBB]); // feature2, skipped
         data.extend_from_slice(b"Node2");
@@ -1496,7 +1508,7 @@ mod tests {
 
     #[test]
     fn test_parse_raw_advertisement_too_short() {
-        let data = vec![0u8; 50];
+        let data = vec![0u8; MIN_LEN - 1];
         assert!(parse_raw_advertisement(&data).is_none());
     }
 
@@ -1506,8 +1518,8 @@ mod tests {
         // bytes — not enough for the 8-byte lat/lon. Must be rejected as a
         // parse failure rather than silently misreading the name from
         // inside the truncated location bytes.
-        let mut data = vec![0u8; 101];
-        data[100] = 0x90;
+        let mut data = vec![0u8; MIN_LEN];
+        data[FLAGS_OFFSET] = FLAG_HAS_LOCATION | FLAG_HAS_NAME;
         data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
 
         assert!(parse_raw_advertisement(&data).is_none());
