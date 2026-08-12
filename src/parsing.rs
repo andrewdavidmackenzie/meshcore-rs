@@ -607,13 +607,9 @@ const PAYLOAD_VERSION_SHIFT: u8 = 6;
 /// packet payload, or `None` if `data` is too short to contain a header and
 /// a path byte.
 pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])> {
-    if data.is_empty() {
-        return None;
-    }
-
     // Header byte layout: bits 0-1 = route type, bits 2-5 = payload type,
     // bits 6-7 = payload format version.
-    let header_byte = data[0];
+    let header_byte = *data.first()?;
     let route_type = RouteType::from(header_byte);
     let payload_type = PayloadType::from(header_byte >> PAYLOAD_TYPE_SHIFT);
     let payload_version = (header_byte & 0xc0) >> PAYLOAD_VERSION_SHIFT;
@@ -631,10 +627,7 @@ pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])
         None
     };
 
-    if offset >= data.len() {
-        return None;
-    }
-    let path_byte = data[offset];
+    let path_byte = *data.get(offset)?;
     offset += 1;
 
     let path_hash_size = ((path_byte & 0xC0) >> 6) + 1;
