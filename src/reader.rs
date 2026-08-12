@@ -38,6 +38,90 @@ pub struct MessageReader {
     contacts_last_modification_timestamp: Arc<RwLock<u32>>,
 }
 
+/// Decodes a RAW_DATA push payload into a [`RawPacketData`]. Returns `None`
+/// if `payload` is too short to contain at least SNR + RSSI.
+///
+/// RAW_DATA is emitted only for directly-routed, not-yet-seen RAW_CUSTOM
+/// packets addressed to this node. The firmware has already parsed and
+/// stripped the mesh header, transport code and path before delivering
+/// this — bytes 3+ are opaque application payload, not a mesh packet, so
+/// unlike LOG_DATA there is no header to decode.
+///
+/// Byte 0: SNR (signed byte, divide by 4.0)
+/// Byte 1: RSSI (signed byte)
+/// Byte 2: reserved
+/// Bytes 3+: opaque RAW_CUSTOM application payload
+///
+/// See meshcore_py reader.py PacketType.RAW_DATA for the reference
+/// implementation this is ported from.
+fn parse_raw_data(payload: &[u8]) -> Option<RawPacketData> {
+    if payload.len() < 2 {
+        return None;
+    }
+
+    let snr_byte = payload[0] as i8;
+    let snr = snr_byte as f32 / 4.0;
+    let rssi = payload[1] as i8 as i16;
+
+    let inner_payload = if payload.len() > 3 {
+        payload[3..].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    Some(RawPacketData {
+        snr,
+        rssi,
+        payload: inner_payload,
+    })
+}
+
+/// Decodes a LOG_DATA push payload into a [`LogData`], best-effort decoding
+/// the mesh packet header and, for ADVERT payloads, the advertiser
+/// identity. Returns `None` if `payload` is too short to contain at least
+/// SNR + RSSI.
+///
+/// LOG_DATA is pushed unconditionally for every packet the radio receives
+/// (`Dispatcher::checkRecv()` -> `logRxRaw()`), regardless of payload type
+/// or routing.
+///
+/// Byte 0: SNR (signed byte, divide by 4.0)
+/// Byte 1: RSSI (signed byte)
+/// Bytes 2+: the raw mesh packet, starting with its header byte
+fn parse_log_data(payload: &[u8]) -> Option<LogData> {
+    if payload.len() < 2 {
+        return None;
+    }
+
+    let snr_byte = payload[0] as i8;
+    let snr = snr_byte as f32 / 4.0;
+    let rssi = payload[1] as i8 as i16;
+
+    let packet = if payload.len() > 2 {
+        &payload[2..]
+    } else {
+        &[] as &[u8]
+    };
+
+    let (header, inner_payload) = match parse_mesh_packet_header(packet) {
+        Some((header, remaining)) => (Some(header), remaining),
+        None => (None, packet),
+    };
+
+    let advertisement = header
+        .as_ref()
+        .filter(|h| h.payload_type == PayloadType::Advert)
+        .and_then(|_| parse_raw_advertisement(inner_payload));
+
+    Some(LogData {
+        snr,
+        rssi,
+        header,
+        advertisement,
+        payload: inner_payload.to_vec(),
+    })
+}
+
 impl MessageReader {
     /// Create a new message reader
     pub fn new(dispatcher: Arc<EventDispatcher>) -> Self {
@@ -652,75 +736,17 @@ impl MessageReader {
             PacketType::SetFloodScope => {}
             PacketType::SendControlData => {}
             PacketType::RawData => {
-                // RAW_DATA push: emitted only for directly-routed,
-                // not-yet-seen RAW_CUSTOM packets addressed to this node.
-                // The firmware has already parsed and stripped the mesh
-                // header, transport code and path before delivering this —
-                // bytes 3+ are opaque application payload, not a mesh
-                // packet, so unlike LOG_DATA there is no header to decode.
-                // Byte 0: SNR (signed byte, divide by 4.0)
-                // Byte 1: RSSI (signed byte)
-                // Byte 2: reserved
-                // Bytes 3+: opaque RAW_CUSTOM application payload
-                // See meshcore_py reader.py PacketType.RAW_DATA for the
-                // reference implementation this is ported from.
-                if payload.len() >= 2 {
-                    let snr_byte = payload[0] as i8;
-                    let snr = snr_byte as f32 / 4.0;
-                    let rssi = payload[1] as i8 as i16;
-
-                    let inner_payload = if payload.len() > 3 {
-                        payload[3..].to_vec()
-                    } else {
-                        Vec::new()
-                    };
-
-                    let raw_data = RawPacketData {
-                        snr,
-                        rssi,
-                        payload: inner_payload,
-                    };
-
+                // See `parse_raw_data` for the RAW_DATA wire format and why
+                // it carries no decodable header.
+                if let Some(raw_data) = parse_raw_data(payload) {
                     let event =
                         MeshCoreEvent::new(EventType::RawData, EventPayload::RawData(raw_data));
                     self.dispatcher.emit(event).await;
                 }
             }
             PacketType::LogData => {
-                // LOG_DATA: pushed unconditionally for every packet the
-                // radio receives (Dispatcher::checkRecv() -> logRxRaw()),
-                // regardless of payload type or routing. Format:
-                // Byte 0: SNR (signed byte, divide by 4.0)
-                // Byte 1: RSSI (signed byte)
-                // Bytes 2+: the raw mesh packet, starting with its header byte
-                if payload.len() >= 2 {
-                    let snr_byte = payload[0] as i8;
-                    let snr = snr_byte as f32 / 4.0;
-                    let rssi = payload[1] as i8 as i16;
-
-                    let packet = if payload.len() > 2 {
-                        &payload[2..]
-                    } else {
-                        &[] as &[u8]
-                    };
-
-                    let (header, inner_payload) = match parse_mesh_packet_header(packet) {
-                        Some((header, remaining)) => (Some(header), remaining),
-                        None => (None, packet),
-                    };
-
-                    let advertisement = header
-                        .as_ref()
-                        .filter(|h| h.payload_type == PayloadType::Advert)
-                        .and_then(|_| parse_raw_advertisement(inner_payload));
-
-                    let log_data = LogData {
-                        snr,
-                        rssi,
-                        header,
-                        advertisement,
-                        payload: inner_payload.to_vec(),
-                    };
+                // See `parse_log_data` for the LOG_DATA wire format.
+                if let Some(log_data) = parse_log_data(payload) {
                     let event =
                         MeshCoreEvent::new(EventType::LogData, EventPayload::LogData(log_data));
                     self.dispatcher.emit(event).await;
@@ -749,6 +775,41 @@ mod tests {
         let dispatcher = Arc::new(EventDispatcher::new());
         let reader = MessageReader::new(dispatcher.clone());
         (reader, dispatcher)
+    }
+
+    #[test]
+    fn test_parse_raw_data_too_short() {
+        assert!(parse_raw_data(&[]).is_none());
+        assert!(parse_raw_data(&[40]).is_none());
+    }
+
+    #[test]
+    fn test_parse_raw_data_decodes_opaque_payload() {
+        let payload = [40, (-70i8) as u8, 0xFF, 0x11, 0x22, 0x33];
+        let raw = parse_raw_data(&payload).expect("should decode");
+        assert_eq!(raw.snr, 10.0);
+        assert_eq!(raw.rssi, -70);
+        assert_eq!(raw.payload, vec![0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn test_parse_log_data_too_short() {
+        assert!(parse_log_data(&[]).is_none());
+        assert!(parse_log_data(&[40]).is_none());
+    }
+
+    #[test]
+    fn test_parse_log_data_decodes_header() {
+        // route=Flood, payload_type=Ack, payload_ver=0, no path hops
+        let header_byte = (3u8 << 2) | 1;
+        let payload = [40, (-70i8) as u8, header_byte, 0b00_000000, 0xEE, 0xFF];
+        let log = parse_log_data(&payload).expect("should decode");
+        assert_eq!(log.snr, 10.0);
+        assert_eq!(log.rssi, -70);
+        let header = log.header.expect("expected a decoded header");
+        assert_eq!(header.route_type, RouteType::Flood);
+        assert_eq!(header.payload_type, PayloadType::Ack);
+        assert_eq!(log.payload, vec![0xEE, 0xFF]);
     }
 
     #[tokio::test]
