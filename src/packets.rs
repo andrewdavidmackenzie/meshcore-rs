@@ -244,6 +244,9 @@ pub enum PayloadType {
     Multipart = 10,
     /// Control packet
     Control = 11,
+    /// Custom packet as raw bytes, for applications with custom encryption
+    /// and payloads (see `RAW_DATA`/`SEND_RAW_DATA`)
+    RawCustom = 0x0F,
     /// Unrecognized payload type
     Unknown = 0xFF,
 }
@@ -263,6 +266,7 @@ impl From<u8> for PayloadType {
             9 => PayloadType::Trace,
             10 => PayloadType::Multipart,
             11 => PayloadType::Control,
+            15 => PayloadType::RawCustom,
             _ => PayloadType::Unknown,
         }
     }
@@ -451,12 +455,16 @@ mod tests {
         assert_eq!(PayloadType::from(9), PayloadType::Trace);
         assert_eq!(PayloadType::from(10), PayloadType::Multipart);
         assert_eq!(PayloadType::from(11), PayloadType::Control);
+        assert_eq!(PayloadType::from(15), PayloadType::RawCustom);
     }
 
     #[test]
     fn test_payload_type_from_u8_unknown() {
+        // 12-14 are still reserved/unassigned in the firmware; only 15
+        // (RAW_CUSTOM) has a defined meaning.
         assert_eq!(PayloadType::from(12), PayloadType::Unknown);
-        assert_eq!(PayloadType::from(15), PayloadType::Unknown);
+        assert_eq!(PayloadType::from(13), PayloadType::Unknown);
+        assert_eq!(PayloadType::from(14), PayloadType::Unknown);
     }
 
     #[test]
