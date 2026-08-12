@@ -580,7 +580,7 @@ pub struct LogData {
 }
 
 /// Decoded over-the-air MeshCore packet header, as embedded at the start of
-/// a [`RawPacketData`] capture.
+/// a [`LogData`] capture.
 #[derive(Debug, Clone)]
 pub struct MeshPacketHeader {
     /// Routing strategy used for this packet
@@ -633,20 +633,18 @@ pub struct RawAdvertisement {
 /// traffic (text messages, adverts, telemetry, ...) never triggers this
 /// event; subscribe to [`crate::EventType::LogData`] instead to observe all
 /// received packets.
+///
+/// `payload` is opaque application data, not a mesh packet: the firmware
+/// has already parsed and stripped the mesh header, transport code and path
+/// before delivering it here, so — unlike `LogData` — there is no header to
+/// decode.
 #[derive(Debug, Clone)]
 pub struct RawPacketData {
     /// Signal-to-noise ratio of the received packet
     pub snr: f32,
     /// Received signal strength indicator (dBm)
     pub rssi: i16,
-    /// Decoded mesh packet header, or `None` if the payload was too short
-    /// to contain one
-    pub header: Option<MeshPacketHeader>,
-    /// Advertiser identity, populated when `header.payload_type` is
-    /// [`PayloadType::Advert`] and the inner payload could be decoded
-    pub advertisement: Option<RawAdvertisement>,
-    /// Inner packet payload, after stripping the header and path. Opaque
-    /// (and typically encrypted) for message and channel payload types.
+    /// Opaque `RAW_CUSTOM` application payload.
     pub payload: Vec<u8>,
 }
 

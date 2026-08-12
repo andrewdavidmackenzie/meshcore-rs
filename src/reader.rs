@@ -654,42 +654,31 @@ impl MessageReader {
             PacketType::RawData => {
                 // RAW_DATA push: emitted only for directly-routed,
                 // not-yet-seen RAW_CUSTOM packets addressed to this node.
-                // See `RawPacketData` for the full semantics; use LOG_DATA
-                // to observe every received packet.
+                // The firmware has already parsed and stripped the mesh
+                // header, transport code and path before delivering this —
+                // bytes 3+ are opaque application payload, not a mesh
+                // packet, so unlike LOG_DATA there is no header to decode.
                 // Byte 0: SNR (signed byte, divide by 4.0)
                 // Byte 1: RSSI (signed byte)
                 // Byte 2: reserved
-                // Bytes 3+: the raw mesh packet, starting with its header byte
-                // See meshcore_py reader.py PacketType.RAW_DATA and
-                // meshcore_parser.py parsePacketPayload for the reference
-                // implementation this is ported from.
+                // Bytes 3+: opaque RAW_CUSTOM application payload
+                // See meshcore_py reader.py PacketType.RAW_DATA for the
+                // reference implementation this is ported from.
                 if payload.len() >= 2 {
                     let snr_byte = payload[0] as i8;
                     let snr = snr_byte as f32 / 4.0;
                     let rssi = payload[1] as i8 as i16;
 
-                    let packet = if payload.len() > 3 {
-                        &payload[3..]
+                    let inner_payload = if payload.len() > 3 {
+                        payload[3..].to_vec()
                     } else {
-                        &[] as &[u8]
+                        Vec::new()
                     };
-
-                    let (header, inner_payload) = match parse_mesh_packet_header(packet) {
-                        Some((header, remaining)) => (Some(header), remaining),
-                        None => (None, packet),
-                    };
-
-                    let advertisement = header
-                        .as_ref()
-                        .filter(|h| h.payload_type == PayloadType::Advert)
-                        .and_then(|_| parse_raw_advertisement(inner_payload));
 
                     let raw_data = RawPacketData {
                         snr,
                         rssi,
-                        header,
-                        advertisement,
-                        payload: inner_payload.to_vec(),
+                        payload: inner_payload,
                     };
 
                     let event =
@@ -2379,7 +2368,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_rx_raw_data_text_msg() {
+    async fn test_handle_rx_raw_data_carries_opaque_payload() {
+        // RAW_DATA's payload (bytes 3+) is already-stripped RAW_CUSTOM
+        // application data, not a mesh packet — even bytes that would
+        // decode as a plausible-looking header/path must be passed through
+        // verbatim, with no attempt to parse them.
         let (reader, dispatcher) = create_reader();
         let mut receiver = dispatcher.receiver();
 
@@ -2387,13 +2380,7 @@ mod tests {
         data.push(40); // snr_raw = 40, SNR = 10.0
         data.push((-70i8) as u8); // rssi = -70
         data.push(0xFF); // reserved
-
-        // Mesh packet: route=Flood(1), payload_type=TextMsg(2), payload_ver=0
-        data.push((2 << 2) | 1);
-        // path: hash_size=1, path_len=2
-        data.push(0b00_000010);
-        data.extend_from_slice(&[0xAA, 0xBB]); // path
-        data.extend_from_slice(&[0x01, 0x02, 0x03]); // opaque inner payload
+        data.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55]); // opaque application payload
 
         reader.handle_rx(data).await.unwrap();
 
@@ -2407,55 +2394,7 @@ mod tests {
             EventPayload::RawData(raw) => {
                 assert_eq!(raw.snr, 10.0);
                 assert_eq!(raw.rssi, -70);
-                let header = raw.header.expect("expected a decoded header");
-                assert_eq!(header.route_type, RouteType::Flood);
-                assert_eq!(header.payload_type, PayloadType::TextMsg);
-                assert_eq!(header.path_len, 2);
-                assert_eq!(header.path, vec![0xAA, 0xBB]);
-                assert!(raw.advertisement.is_none());
-                assert_eq!(raw.payload, vec![0x01, 0x02, 0x03]);
-            }
-            _ => panic!("Expected RawData payload"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_handle_rx_raw_data_advert_decodes_advertiser() {
-        let (reader, dispatcher) = create_reader();
-        let mut receiver = dispatcher.receiver();
-
-        let mut data = vec![PacketType::RawData as u8];
-        data.push(20); // snr_raw = 20, SNR = 5.0
-        data.push((-90i8) as u8); // rssi = -90
-        data.push(0xFF); // reserved
-
-        // Mesh packet: route=Flood(1), payload_type=Advert(4), payload_ver=0
-        data.push((4 << 2) | 1);
-        data.push(0b00_000000); // no path hops
-
-        // ADVERT inner payload: pubkey(32) + timestamp(4) + signature(64) + flags(1)
-        data.extend_from_slice(&[0xAB; 32]); // pubkey
-        data.extend_from_slice(&999u32.to_le_bytes()); // timestamp
-        data.extend_from_slice(&[0xCD; 64]); // signature
-        data.push(0x80); // flags: has name only
-        data.extend_from_slice(b"Repeater1");
-
-        reader.handle_rx(data).await.unwrap();
-
-        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(event.event_type, EventType::RawData);
-        match event.payload {
-            EventPayload::RawData(raw) => {
-                let header = raw.header.expect("expected a decoded header");
-                assert_eq!(header.payload_type, PayloadType::Advert);
-                let adv = raw.advertisement.expect("expected a decoded advertiser");
-                assert_eq!(adv.public_key, [0xAB; 32]);
-                assert_eq!(adv.timestamp, 999);
-                assert_eq!(adv.name.as_deref(), Some("Repeater1"));
+                assert_eq!(raw.payload, vec![0x11, 0x22, 0x33, 0x44, 0x55]);
             }
             _ => panic!("Expected RawData payload"),
         }
@@ -2481,7 +2420,6 @@ mod tests {
             EventPayload::RawData(raw) => {
                 assert_eq!(raw.snr, 10.0);
                 assert_eq!(raw.rssi, -70);
-                assert!(raw.header.is_none());
                 assert!(raw.payload.is_empty());
             }
             _ => panic!("Expected RawData payload"),
