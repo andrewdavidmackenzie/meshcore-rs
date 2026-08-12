@@ -39,4 +39,3 @@ required-features = ["serial"]
 
 [[example]]
 name = "rf_packet_monitor"
-required-features = ["serial"]

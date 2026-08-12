@@ -145,7 +145,15 @@ async fn main() -> Result<(), meshcore_rs::Error> {
 }
 ```
 
-See `examples/rf_packet_monitor.rs` for a complete, runnable version.
+See `examples/rf_packet_monitor.rs` for a complete, runnable version:
+
+```sh
+cargo run --example rf_packet_monitor --features serial -- --serial /dev/ttyUSB0
+cargo run --example rf_packet_monitor --features ble -- --ble MeshCore-XXXX
+cargo run --example rf_packet_monitor --features tcp -- --tcp 192.168.1.50:5000
+```
+
+Exactly one of `--serial`, `--tcp` or `--ble` is required.
 
 Note: `EventType::RawData` is a different, much narrower event — it only
 fires for directly-routed, not-yet-seen `RAW_CUSTOM` payloads sent by
