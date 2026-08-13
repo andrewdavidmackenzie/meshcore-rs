@@ -581,10 +581,12 @@ impl CommandHandler {
     /// Format: [CMD_REMOVE_CONTACT=0x0F][pubkey: 32]
     pub async fn remove_contact(&self, key: impl Into<Destination>) -> Result<()> {
         let dest: Destination = key.into();
-        let prefix = dest.prefix()?;
+        let pubkey = dest.public_key().ok_or_else(|| {
+            Error::invalid_param("Remove contact requires full 32-byte public key")
+        })?;
 
         let mut data = vec![CMD_REMOVE_CONTACT];
-        data.extend_from_slice(&prefix);
+        data.extend_from_slice(&pubkey);
         self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
@@ -595,9 +597,11 @@ impl CommandHandler {
     pub async fn export_contact(&self, key: Option<impl Into<Destination>>) -> Result<String> {
         let data = if let Some(k) = key {
             let dest: Destination = k.into();
-            let prefix = dest.prefix()?;
+            let pubkey = dest.public_key().ok_or_else(|| {
+                Error::invalid_param("Export contact requires full 32-byte public key")
+            })?;
             let mut d = vec![CMD_EXPORT_CONTACT];
-            d.extend_from_slice(&prefix);
+            d.extend_from_slice(&pubkey);
             d
         } else {
             vec![CMD_EXPORT_CONTACT]
@@ -1715,6 +1719,72 @@ mod tests {
         let result: Result<String> = handler.export_contact(None::<&str>).await;
         assert!(result.is_ok());
         assert!(result.unwrap().starts_with("mod.rs://"));
+    }
+
+    #[tokio::test]
+    async fn test_export_contact_with_key_sends_full_public_key() {
+        // Regression test: this used to send only a 6-byte prefix, despite
+        // the documented wire format requiring the full 32-byte public key.
+        let (handler, mut rx, dispatcher) = create_test_handler();
+        let pubkey_hex = "bb".repeat(32);
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_EXPORT_CONTACT);
+            assert_eq!(sent.len(), 1 + 32);
+            assert_eq!(&sent[1..], [0xbbu8; 32].as_slice());
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::ContactUri,
+                    EventPayload::String("mc://...".to_string()),
+                ))
+                .await;
+        });
+
+        let result: Result<String> = handler.export_contact(Some(pubkey_hex.as_str())).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_export_contact_with_prefix_only_errors() {
+        let (handler, _rx, _dispatcher) = create_test_handler();
+        // Only a 6-byte prefix (12 hex chars) -- not enough for the
+        // required 32-byte public key.
+        let result: Result<String> = handler.export_contact(Some("aabbccddeeff")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_remove_contact_sends_full_public_key() {
+        // Regression test: this used to send only a 6-byte prefix, despite
+        // the documented wire format requiring the full 32-byte public key
+        // -- causing the real firmware to never respond (timeout).
+        let (handler, mut rx, dispatcher) = create_test_handler();
+        let pubkey_hex = "aa".repeat(32);
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_REMOVE_CONTACT);
+            assert_eq!(sent.len(), 1 + 32);
+            assert_eq!(&sent[1..], [0xaau8; 32].as_slice());
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
+                .await;
+        });
+
+        let result = handler.remove_contact(pubkey_hex.as_str()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_remove_contact_with_prefix_only_errors() {
+        let (handler, _rx, _dispatcher) = create_test_handler();
+        let result = handler.remove_contact("aabbccddeeff").await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

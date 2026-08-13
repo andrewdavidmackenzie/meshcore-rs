@@ -40,3 +40,6 @@ required-features = ["serial"]
 
 [[example]]
 name = "rf_packet_monitor"
+
+[[example]]
+name = "add_remove_contact"
