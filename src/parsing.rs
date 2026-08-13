@@ -66,7 +66,17 @@ pub fn read_i32_le(data: &[u8], offset: usize) -> Result<i32> {
     ]))
 }
 
-/// Read a null-terminated or fixed-length UTF-8 string
+/// Read a null-terminated or fixed-length UTF-8 string.
+///
+/// A device's name/label field is not always null-terminated or
+/// zero-padded within its fixed-size slot on the wire (observed on real
+/// advertisement pushes) — bytes past the logical end of the string can
+/// be leftover garbage. Reading `max_len` raw bytes in that case
+/// previously surfaced as a visibly corrupted string: stray control
+/// characters and U+FFFD replacement characters from invalid UTF-8
+/// sequences. Stop at the first NUL byte, control character, or
+/// invalid-UTF-8 byte, whichever comes first — a legitimate name never
+/// contains any of those.
 pub fn read_string(data: &[u8], offset: usize, max_len: usize) -> String {
     // limit indexing to the size of the data buffer
     // jonesy:allow(overflow)
@@ -77,6 +87,9 @@ pub fn read_string(data: &[u8], offset: usize, max_len: usize) -> String {
     let null_pos = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
 
     String::from_utf8_lossy(&slice[..null_pos])
+        .chars()
+        .take_while(|&c| !c.is_control() && c != '\u{FFFD}')
+        .collect::<String>()
         .trim()
         .to_string()
 }
@@ -881,6 +894,31 @@ mod tests {
     fn test_read_string_trims_whitespace() {
         let data = b"  hello  \0";
         assert_eq!(read_string(data, 0, 10), "hello");
+    }
+
+    #[test]
+    fn test_read_string_stops_at_control_character_when_not_null_terminated() {
+        // No NUL anywhere in the 32-byte window (a real firmware quirk
+        // observed on some advertisement pushes) — trailing bytes are
+        // leftover garbage including raw control bytes.
+        let mut data = b"39-HTJURA-YAN-RPT3".to_vec();
+        data.extend_from_slice(&[0x01, 0x02, 0xFF, 0x03]); // garbage, no 0x00
+        data.resize(32, 0x7F); // pad with DEL (a control character), not NUL
+        assert_eq!(read_string(&data, 0, 32), "39-HTJURA-YAN-RPT3");
+    }
+
+    #[test]
+    fn test_read_string_stops_at_invalid_utf8_when_not_null_terminated() {
+        let mut data = b"Node".to_vec();
+        data.push(0x80); // invalid UTF-8 continuation byte with no leader
+        data.extend_from_slice(&[0x41; 10]); // more bytes after the anomaly
+        assert_eq!(read_string(&data, 0, data.len()), "Node");
+    }
+
+    #[test]
+    fn test_read_string_all_garbage_returns_empty() {
+        let data = [0x01, 0x02, 0x03, 0x04];
+        assert_eq!(read_string(&data, 0, 4), "");
     }
 
     #[test]
