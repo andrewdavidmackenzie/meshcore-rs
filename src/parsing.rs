@@ -599,6 +599,15 @@ const PAYLOAD_TYPE_SHIFT: u8 = 2;
 /// byte.
 const PAYLOAD_VERSION_SHIFT: u8 = 6;
 
+/// Length of the packet header byte itself.
+const HEADER_BYTE_LEN: usize = 1;
+/// Length of the optional transport code, present only for
+/// `TransportFlood`/`TransportDirect` routes.
+const TRANSPORT_CODE_LEN: usize = 4;
+/// Length of the path-length/hash-size byte that follows the header (and
+/// the transport code, if present).
+const PATH_BYTE_LEN: usize = 1;
+
 /// Parse the MeshCore over-the-air packet header (route type, payload type
 /// and path) from the start of a buffer, as embedded in RAW_DATA/LOG_DATA
 /// captures.
@@ -614,31 +623,35 @@ pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])
     let payload_type = PayloadType::from(header_byte >> PAYLOAD_TYPE_SHIFT);
     let payload_version = (header_byte & 0xc0) >> PAYLOAD_VERSION_SHIFT;
 
-    let mut offset = 1;
+    let mut offset = HEADER_BYTE_LEN;
 
     let transport_code = if matches!(
         route_type,
         RouteType::TransportFlood | RouteType::TransportDirect
     ) {
         let code: [u8; 4] = read_bytes(data, offset).ok()?;
-        offset += 4;
+        offset = offset.checked_add(TRANSPORT_CODE_LEN)?;
         Some(code)
     } else {
         None
     };
 
     let path_byte = *data.get(offset)?;
-    offset += 1;
+    offset = offset.checked_add(PATH_BYTE_LEN)?;
 
-    let path_hash_size = ((path_byte & 0xC0) >> 6) + 1;
+    // path_hash_size is bounded to 1-4 (2-bit field + 1) and path_len to
+    // 0-63 (6-bit field), so their product is bounded to 252, far under
+    // usize::MAX -- neither line below can overflow.
+    let path_hash_size = ((path_byte & 0xC0) >> 6) + 1; // jonesy:allow(overflow)
     let path_len = path_byte & 0x3F;
-    let path_bytes_len = path_len as usize * path_hash_size as usize;
+    let path_bytes_len = path_len as usize * path_hash_size as usize; // jonesy:allow(overflow)
 
-    if offset + path_bytes_len > data.len() {
+    let path_end = offset.checked_add(path_bytes_len)?;
+    if path_end > data.len() {
         return None;
     }
-    let path = data[offset..offset + path_bytes_len].to_vec();
-    offset += path_bytes_len;
+    let path = data[offset..path_end].to_vec(); // jonesy:allow(bounds) -- checked above
+    offset = path_end;
 
     let header = MeshPacketHeader {
         route_type,
@@ -685,7 +698,7 @@ pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
     let public_key: [u8; 32] = read_bytes(data, 0).ok()?;
     let timestamp = read_u32_le(data, TIMESTAMP_OFFSET).ok()?;
     let signature: [u8; 64] = read_bytes(data, SIGNATURE_OFFSET).ok()?;
-    let flags = data[FLAGS_OFFSET];
+    let flags = *data.get(FLAGS_OFFSET)?;
     let adv_type = flags & FLAG_ADV_TYPE_MASK;
 
     let mut offset = MIN_LEN;
@@ -693,22 +706,24 @@ pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
     let (lat, lon) = if flags & FLAG_HAS_LOCATION != 0 {
         // A declared location that does not fit means the capture is
         // truncated; every later offset would be wrong.
+        let lon_offset = offset.checked_add(4)?;
         let lat = read_i32_le(data, offset).ok()?;
-        let lon = read_i32_le(data, offset + 4).ok()?;
-        offset += LOCATION_LEN;
+        let lon = read_i32_le(data, lon_offset).ok()?;
+        offset = offset.checked_add(LOCATION_LEN)?;
         (Some(lat), Some(lon))
     } else {
         (None, None)
     };
 
     if flags & FLAG_HAS_FEATURE1 != 0 {
-        offset += FEATURE_BLOCK_LEN;
+        offset = offset.checked_add(FEATURE_BLOCK_LEN)?;
     }
     if flags & FLAG_HAS_FEATURE2 != 0 {
-        offset += FEATURE_BLOCK_LEN;
+        offset = offset.checked_add(FEATURE_BLOCK_LEN)?;
     }
 
     let name = if flags & FLAG_HAS_NAME != 0 && data.len() > offset {
+        // jonesy:allow(overflow) -- guarded by `data.len() > offset` above
         Some(read_string(data, offset, data.len() - offset))
     } else {
         None

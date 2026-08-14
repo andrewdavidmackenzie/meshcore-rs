@@ -38,6 +38,13 @@ pub struct MessageReader {
     contacts_last_modification_timestamp: Arc<RwLock<u32>>,
 }
 
+/// Length of the SNR + RSSI prefix shared by RAW_DATA and LOG_DATA push
+/// payloads.
+const SNR_RSSI_LEN: usize = 2;
+/// RAW_DATA only: length of the reserved byte immediately after SNR/RSSI,
+/// before the opaque application payload.
+const RAW_DATA_RESERVED_LEN: usize = 1;
+
 /// Decodes a RAW_DATA push payload into a [`RawPacketData`]. Returns `None`
 /// if `payload` is too short to contain at least SNR + RSSI.
 ///
@@ -55,19 +62,14 @@ pub struct MessageReader {
 /// See meshcore_py reader.py PacketType.RAW_DATA for the reference
 /// implementation this is ported from.
 fn parse_raw_data(payload: &[u8]) -> Option<RawPacketData> {
-    if payload.len() < 2 {
-        return None;
-    }
-
-    let snr_byte = payload[0] as i8;
+    let snr_byte = *payload.first()? as i8;
     let snr = snr_byte as f32 / 4.0;
-    let rssi = payload[1] as i8 as i16;
+    let rssi = *payload.get(1)? as i8 as i16;
 
-    let inner_payload = if payload.len() > 3 {
-        payload[3..].to_vec()
-    } else {
-        Vec::new()
-    };
+    let inner_payload = payload
+        .get(SNR_RSSI_LEN + RAW_DATA_RESERVED_LEN..)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default();
 
     Some(RawPacketData {
         snr,
@@ -89,19 +91,11 @@ fn parse_raw_data(payload: &[u8]) -> Option<RawPacketData> {
 /// Byte 1: RSSI (signed byte)
 /// Bytes 2+: the raw mesh packet, starting with its header byte
 fn parse_log_data(payload: &[u8]) -> Option<LogData> {
-    if payload.len() < 2 {
-        return None;
-    }
-
-    let snr_byte = payload[0] as i8;
+    let snr_byte = *payload.first()? as i8;
     let snr = snr_byte as f32 / 4.0;
-    let rssi = payload[1] as i8 as i16;
+    let rssi = *payload.get(1)? as i8 as i16;
 
-    let packet = if payload.len() > 2 {
-        &payload[2..]
-    } else {
-        &[] as &[u8]
-    };
+    let packet = payload.get(SNR_RSSI_LEN..).unwrap_or(&[]);
 
     let (header, inner_payload) = match parse_mesh_packet_header(packet) {
         Some((header, remaining)) => (Some(header), remaining),
