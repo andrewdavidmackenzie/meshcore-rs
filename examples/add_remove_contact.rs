@@ -79,26 +79,47 @@ async fn run(args: ConnectionArgs) -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("  -> add_contact returned Ok.");
 
-    let after_add = meshcore.commands().lock().await.get_contacts(0).await?;
-    let found = after_add.iter().any(|c| c.public_key == TEST_PUBLIC_KEY);
-    println!("  Present in the node's contact list: {found}");
+    // From here on the contact may exist on the device -- always attempt
+    // removal and disconnect below, even if a verification step fails,
+    // instead of bailing out via `?` and leaving it stranded.
+    match meshcore.commands().lock().await.get_contacts(0).await {
+        Ok(after_add) => {
+            let found = after_add.iter().any(|c| c.public_key == TEST_PUBLIC_KEY);
+            println!("  Present in the node's contact list: {found}");
+        }
+        Err(err) => eprintln!("  WARNING: failed to verify the contact was added: {err}"),
+    }
 
     println!("\nRemoving test contact {TEST_CONTACT_NAME:?}...");
-    meshcore
+    match meshcore
         .commands()
         .lock()
         .await
         .remove_contact(&contact)
-        .await?;
-    println!("  -> remove_contact returned Ok.");
+        .await
+    {
+        Ok(()) => {
+            println!("  -> remove_contact returned Ok.");
 
-    let after_remove = meshcore.commands().lock().await.get_contacts(0).await?;
-    let still_present = after_remove.iter().any(|c| c.public_key == TEST_PUBLIC_KEY);
-    println!("  Still present in the node's contact list: {still_present}");
-    if still_present {
-        eprintln!(
-            "WARNING: test contact was not actually removed -- you may need to remove it by hand."
-        );
+            match meshcore.commands().lock().await.get_contacts(0).await {
+                Ok(after_remove) => {
+                    let still_present =
+                        after_remove.iter().any(|c| c.public_key == TEST_PUBLIC_KEY);
+                    println!("  Still present in the node's contact list: {still_present}");
+                    if still_present {
+                        eprintln!(
+                            "WARNING: test contact was not actually removed -- you may need to remove it by hand."
+                        );
+                    }
+                }
+                Err(err) => {
+                    eprintln!("  WARNING: failed to verify the contact was removed: {err}")
+                }
+            }
+        }
+        Err(err) => eprintln!(
+            "  WARNING: remove_contact failed: {err} -- you may need to remove it by hand."
+        ),
     }
 
     meshcore.disconnect().await?;
