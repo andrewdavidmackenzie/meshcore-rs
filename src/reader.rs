@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use crate::events::*;
-use crate::packets::{BinaryReqType, ControlType, PacketType};
+use crate::packets::{BinaryReqType, ControlType, PacketType, PayloadType};
 use crate::parsing::*;
 use crate::{Result, CHANNEL_INFO_LEN, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
 
@@ -36,6 +36,84 @@ pub struct MessageReader {
     pending_contacts: Arc<RwLock<Vec<Contact>>>,
     /// Current contact list last_modification_timestamp value
     contacts_last_modification_timestamp: Arc<RwLock<u32>>,
+}
+
+/// Length of the SNR + RSSI prefix shared by RAW_DATA and LOG_DATA push
+/// payloads.
+const SNR_RSSI_LEN: usize = 2;
+/// RAW_DATA only: length of the reserved byte immediately after SNR/RSSI,
+/// before the opaque application payload.
+const RAW_DATA_RESERVED_LEN: usize = 1;
+
+/// Decodes a RAW_DATA push payload into a [`RawPacketData`]. Returns `None`
+/// if `payload` is too short to contain at least SNR + RSSI.
+///
+/// RAW_DATA is emitted only for directly-routed, not-yet-seen RAW_CUSTOM
+/// packets addressed to this node. The firmware has already parsed and
+/// stripped the mesh header, transport code and path before delivering
+/// this — bytes 3+ are opaque application payload, not a mesh packet, so
+/// unlike LOG_DATA there is no header to decode.
+///
+/// Byte 0: SNR (signed byte, divide by 4.0)
+/// Byte 1: RSSI (signed byte)
+/// Byte 2: reserved
+/// Bytes 3+: opaque RAW_CUSTOM application payload
+///
+/// See meshcore_py reader.py PacketType.RAW_DATA for the reference
+/// implementation this is ported from.
+fn parse_raw_data(payload: &[u8]) -> Option<RawPacketData> {
+    let snr_byte = *payload.first()? as i8;
+    let snr = snr_byte as f32 / 4.0;
+    let rssi = *payload.get(1)? as i8 as i16;
+
+    let inner_payload = payload
+        .get(SNR_RSSI_LEN + RAW_DATA_RESERVED_LEN..)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default();
+
+    Some(RawPacketData {
+        snr,
+        rssi,
+        payload: inner_payload,
+    })
+}
+
+/// Decodes a LOG_DATA push payload into a [`LogData`], best-effort decoding
+/// the mesh packet header and, for ADVERT payloads, the advertiser
+/// identity. Returns `None` if `payload` is too short to contain at least
+/// SNR + RSSI.
+///
+/// LOG_DATA is pushed unconditionally for every packet the radio receives
+/// (`Dispatcher::checkRecv()` -> `logRxRaw()`), regardless of payload type
+/// or routing.
+///
+/// Byte 0: SNR (signed byte, divide by 4.0)
+/// Byte 1: RSSI (signed byte)
+/// Bytes 2+: the raw mesh packet, starting with its header byte
+fn parse_log_data(payload: &[u8]) -> Option<LogData> {
+    let snr_byte = *payload.first()? as i8;
+    let snr = snr_byte as f32 / 4.0;
+    let rssi = *payload.get(1)? as i8 as i16;
+
+    let packet = payload.get(SNR_RSSI_LEN..).unwrap_or(&[]);
+
+    let (header, inner_payload) = match parse_mesh_packet_header(packet) {
+        Some((header, remaining)) => (Some(header), remaining),
+        None => (None, packet),
+    };
+
+    let advertisement = header
+        .as_ref()
+        .filter(|h| h.payload_type == PayloadType::Advert)
+        .and_then(|_| parse_raw_advertisement(inner_payload));
+
+    Some(LogData {
+        snr,
+        rssi,
+        header,
+        advertisement,
+        payload: inner_payload.to_vec(),
+    })
 }
 
 impl MessageReader {
@@ -651,29 +729,18 @@ impl MessageReader {
             PacketType::PathDiscovery => {}
             PacketType::SetFloodScope => {}
             PacketType::SendControlData => {}
-            PacketType::RawData => {}
+            PacketType::RawData => {
+                // See `parse_raw_data` for the RAW_DATA wire format and why
+                // it carries no decodable header.
+                if let Some(raw_data) = parse_raw_data(payload) {
+                    let event =
+                        MeshCoreEvent::new(EventType::RawData, EventPayload::RawData(raw_data));
+                    self.dispatcher.emit(event).await;
+                }
+            }
             PacketType::LogData => {
-                // LOG_DATA format:
-                // Byte 0: SNR (signed byte, divide by 4.0)
-                // Byte 1: RSSI (signed byte)
-                // Bytes 2+: Raw RF payload
-                if payload.len() >= 2 {
-                    let snr_byte = payload[0] as i8;
-                    let snr = snr_byte as f32 / 4.0;
-
-                    let rssi = payload[1] as i8 as i16;
-
-                    let rf_payload = if payload.len() > 2 {
-                        payload[2..].to_vec()
-                    } else {
-                        Vec::new()
-                    };
-
-                    let log_data = LogData {
-                        snr,
-                        rssi,
-                        payload: rf_payload,
-                    };
+                // See `parse_log_data` for the LOG_DATA wire format.
+                if let Some(log_data) = parse_log_data(payload) {
                     let event =
                         MeshCoreEvent::new(EventType::LogData, EventPayload::LogData(log_data));
                     self.dispatcher.emit(event).await;
@@ -695,12 +762,48 @@ impl MessageReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packets::RouteType;
     use std::time::Duration;
 
     fn create_reader() -> (MessageReader, Arc<EventDispatcher>) {
         let dispatcher = Arc::new(EventDispatcher::new());
         let reader = MessageReader::new(dispatcher.clone());
         (reader, dispatcher)
+    }
+
+    #[test]
+    fn test_parse_raw_data_too_short() {
+        assert!(parse_raw_data(&[]).is_none());
+        assert!(parse_raw_data(&[40]).is_none());
+    }
+
+    #[test]
+    fn test_parse_raw_data_decodes_opaque_payload() {
+        let payload = [40, (-70i8) as u8, 0xFF, 0x11, 0x22, 0x33];
+        let raw = parse_raw_data(&payload).expect("should decode");
+        assert_eq!(raw.snr, 10.0);
+        assert_eq!(raw.rssi, -70);
+        assert_eq!(raw.payload, vec![0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn test_parse_log_data_too_short() {
+        assert!(parse_log_data(&[]).is_none());
+        assert!(parse_log_data(&[40]).is_none());
+    }
+
+    #[test]
+    fn test_parse_log_data_decodes_header() {
+        // route=Flood, payload_type=Ack, payload_ver=0, no path hops
+        let header_byte = (3u8 << 2) | 1;
+        let payload = [40, (-70i8) as u8, header_byte, 0b00_000000, 0xEE, 0xFF];
+        let log = parse_log_data(&payload).expect("should decode");
+        assert_eq!(log.snr, 10.0);
+        assert_eq!(log.rssi, -70);
+        let header = log.header.expect("expected a decoded header");
+        assert_eq!(header.route_type, RouteType::Flood);
+        assert_eq!(header.payload_type, PayloadType::Ack);
+        assert_eq!(log.payload, vec![0xEE, 0xFF]);
     }
 
     #[tokio::test]
@@ -2316,6 +2419,178 @@ mod tests {
         match event.payload {
             EventPayload::Contacts(contacts) => assert_eq!(contacts.len(), 1),
             _ => panic!("Expected Contacts payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_raw_data_carries_opaque_payload() {
+        // RAW_DATA's payload (bytes 3+) is already-stripped RAW_CUSTOM
+        // application data, not a mesh packet — even bytes that would
+        // decode as a plausible-looking header/path must be passed through
+        // verbatim, with no attempt to parse them.
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::RawData as u8];
+        data.push(40); // snr_raw = 40, SNR = 10.0
+        data.push((-70i8) as u8); // rssi = -70
+        data.push(0xFF); // reserved
+        data.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55]); // opaque application payload
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::RawData);
+        match event.payload {
+            EventPayload::RawData(raw) => {
+                assert_eq!(raw.snr, 10.0);
+                assert_eq!(raw.rssi, -70);
+                assert_eq!(raw.payload, vec![0x11, 0x22, 0x33, 0x44, 0x55]);
+            }
+            _ => panic!("Expected RawData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_raw_data_snr_rssi_only() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Only SNR + RSSI, no reserved byte or packet bytes at all
+        let data = vec![PacketType::RawData as u8, 40, (-70i8) as u8];
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::RawData);
+        match event.payload {
+            EventPayload::RawData(raw) => {
+                assert_eq!(raw.snr, 10.0);
+                assert_eq!(raw.rssi, -70);
+                assert!(raw.payload.is_empty());
+            }
+            _ => panic!("Expected RawData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_raw_data_too_short() {
+        let (reader, _dispatcher) = create_reader();
+
+        // Less than the 2 bytes required for SNR + RSSI: silently dropped,
+        // matching every other lenient push-notification handler above.
+        let result = reader.handle_rx(vec![PacketType::RawData as u8, 40]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_log_data_decodes_header() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::LogData as u8];
+        data.push(40); // snr_raw = 40, SNR = 10.0
+        data.push((-70i8) as u8); // rssi = -70
+                                  // no reserved byte here, unlike RAW_DATA
+
+        // Mesh packet: route=Direct(2), payload_type=Ack(3), payload_ver=0
+        data.push((3 << 2) | 2);
+        data.push(0b00_000000); // no path hops
+        data.extend_from_slice(&[0xEE, 0xFF]); // opaque inner payload
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::LogData);
+        match event.payload {
+            EventPayload::LogData(log) => {
+                assert_eq!(log.snr, 10.0);
+                assert_eq!(log.rssi, -70);
+                let header = log.header.expect("expected a decoded header");
+                assert_eq!(header.route_type, RouteType::Direct);
+                assert_eq!(header.payload_type, PayloadType::Ack);
+                assert!(log.advertisement.is_none());
+                assert_eq!(log.payload, vec![0xEE, 0xFF]);
+            }
+            _ => panic!("Expected LogData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_log_data_advert_decodes_advertiser() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::LogData as u8];
+        data.push(20); // snr_raw = 20, SNR = 5.0
+        data.push((-90i8) as u8); // rssi = -90
+
+        // Mesh packet: route=Flood(1), payload_type=Advert(4), payload_ver=0
+        data.push((4 << 2) | 1);
+        data.push(0b00_000000); // no path hops
+
+        data.extend_from_slice(&[0x11; 32]); // pubkey
+        data.extend_from_slice(&42u32.to_le_bytes()); // timestamp
+        data.extend_from_slice(&[0x22; 64]); // signature
+        data.push(0x80); // flags: has name only
+        data.extend_from_slice(b"Node2");
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::LogData);
+        match event.payload {
+            EventPayload::LogData(log) => {
+                let header = log.header.expect("expected a decoded header");
+                assert_eq!(header.payload_type, PayloadType::Advert);
+                let adv = log.advertisement.expect("expected a decoded advertiser");
+                assert_eq!(adv.public_key, [0x11; 32]);
+                assert_eq!(adv.name.as_deref(), Some("Node2"));
+            }
+            _ => panic!("Expected LogData payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_log_data_snr_rssi_only() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // Only SNR + RSSI, no packet bytes at all
+        let data = vec![PacketType::LogData as u8, 40, (-70i8) as u8];
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::LogData);
+        match event.payload {
+            EventPayload::LogData(log) => {
+                assert_eq!(log.snr, 10.0);
+                assert_eq!(log.rssi, -70);
+                assert!(log.header.is_none());
+                assert!(log.payload.is_empty());
+            }
+            _ => panic!("Expected LogData payload"),
         }
     }
 }

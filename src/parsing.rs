@@ -2,9 +2,10 @@
 
 use crate::error::Error;
 use crate::events::{
-    AclEntry, ChannelMessage, Contact, ContactMessage, DeviceInfoData, MmaEntry, Neighbour,
-    NeighboursData, SelfInfo, StatusData,
+    AclEntry, ChannelMessage, Contact, ContactMessage, DeviceInfoData, MeshPacketHeader, MmaEntry,
+    Neighbour, NeighboursData, RawAdvertisement, SelfInfo, StatusData,
 };
+use crate::packets::{PayloadType, RouteType};
 use crate::Result;
 
 /// Read a little-endian u16 from a byte slice
@@ -589,6 +590,154 @@ pub fn parse_mma(data: &[u8]) -> Vec<MmaEntry> {
     }
 
     entries
+}
+
+/// Bit position of the payload type field within a packet header byte (see
+/// `parse_mesh_packet_header`); route type occupies bits 0-1 below it.
+const PAYLOAD_TYPE_SHIFT: u8 = 2;
+/// Bit position of the payload format version field within a packet header
+/// byte.
+const PAYLOAD_VERSION_SHIFT: u8 = 6;
+
+/// Length of the packet header byte itself.
+const HEADER_BYTE_LEN: usize = 1;
+/// Length of the optional transport code, present only for
+/// `TransportFlood`/`TransportDirect` routes.
+const TRANSPORT_CODE_LEN: usize = 4;
+/// Length of the path-length/hash-size byte that follows the header (and
+/// the transport code, if present).
+const PATH_BYTE_LEN: usize = 1;
+
+/// Parse the MeshCore over-the-air packet header (route type, payload type
+/// and path) from the start of a buffer, as embedded in RAW_DATA/LOG_DATA
+/// captures.
+///
+/// Returns the decoded header together with the remaining, unparsed inner
+/// packet payload, or `None` if `data` is too short to contain a header and
+/// a path byte.
+pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])> {
+    // Header byte layout: bits 0-1 = route type, bits 2-5 = payload type,
+    // bits 6-7 = payload format version.
+    let header_byte = *data.first()?;
+    let route_type = RouteType::from(header_byte);
+    let payload_type = PayloadType::from(header_byte >> PAYLOAD_TYPE_SHIFT);
+    let payload_version = (header_byte & 0xc0) >> PAYLOAD_VERSION_SHIFT;
+
+    let mut offset = HEADER_BYTE_LEN;
+
+    let transport_code = if matches!(
+        route_type,
+        RouteType::TransportFlood | RouteType::TransportDirect
+    ) {
+        let code: [u8; 4] = read_bytes(data, offset).ok()?;
+        offset = offset.checked_add(TRANSPORT_CODE_LEN)?;
+        Some(code)
+    } else {
+        None
+    };
+
+    let path_byte = *data.get(offset)?;
+    offset = offset.checked_add(PATH_BYTE_LEN)?;
+
+    // path_hash_size is bounded to 1-4 (2-bit field + 1) and path_len to
+    // 0-63 (6-bit field), so their product is bounded to 252, far under
+    // usize::MAX -- neither line below can overflow.
+    let path_hash_size = ((path_byte & 0xC0) >> 6) + 1; // jonesy:allow(overflow)
+    let path_len = path_byte & 0x3F;
+    let path_bytes_len = path_len as usize * path_hash_size as usize; // jonesy:allow(overflow)
+
+    let path_end = offset.checked_add(path_bytes_len)?;
+    if path_end > data.len() {
+        return None;
+    }
+    let path = data[offset..path_end].to_vec(); // jonesy:allow(bounds) -- checked above
+    offset = path_end;
+
+    let header = MeshPacketHeader {
+        route_type,
+        payload_type,
+        payload_version,
+        transport_code,
+        path_len,
+        path_hash_size,
+        path,
+    };
+
+    Some((header, &data[offset..]))
+}
+
+const PUBLIC_KEY_LEN: usize = 32;
+const TIMESTAMP_LEN: usize = 4;
+const SIGNATURE_LEN: usize = 64;
+const FLAGS_LEN: usize = 1;
+
+const TIMESTAMP_OFFSET: usize = PUBLIC_KEY_LEN;
+const SIGNATURE_OFFSET: usize = TIMESTAMP_OFFSET + TIMESTAMP_LEN;
+const FLAGS_OFFSET: usize = SIGNATURE_OFFSET + SIGNATURE_LEN;
+/// Minimum length of a raw ADVERT payload (public key + timestamp +
+/// signature + flags), before any of the optional trailing fields.
+const MIN_LEN: usize = FLAGS_OFFSET + FLAGS_LEN;
+
+// Flag bits of the byte at FLAGS_OFFSET.
+const FLAG_ADV_TYPE_MASK: u8 = 0x0F; // advertiser type (see Contact::contact_type)
+const FLAG_HAS_LOCATION: u8 = 0x10; // 8 bytes: lat (i32 LE) + lon (i32 LE)
+const FLAG_HAS_FEATURE1: u8 = 0x20; // 2 bytes, not currently decoded
+const FLAG_HAS_FEATURE2: u8 = 0x40; // 2 bytes, not currently decoded
+const FLAG_HAS_NAME: u8 = 0x80; // remaining bytes, UTF-8 name
+
+const LOCATION_LEN: usize = 8;
+const FEATURE_BLOCK_LEN: usize = 2;
+
+/// Parse a raw ADVERT payload (public key, timestamp, signature, flags and
+/// optional location/name), as carried by a [`PayloadType::Advert`] packet.
+pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
+    if data.len() < MIN_LEN {
+        return None;
+    }
+
+    let public_key: [u8; 32] = read_bytes(data, 0).ok()?;
+    let timestamp = read_u32_le(data, TIMESTAMP_OFFSET).ok()?;
+    let signature: [u8; 64] = read_bytes(data, SIGNATURE_OFFSET).ok()?;
+    let flags = *data.get(FLAGS_OFFSET)?;
+    let adv_type = flags & FLAG_ADV_TYPE_MASK;
+
+    let mut offset = MIN_LEN;
+
+    let (lat, lon) = if flags & FLAG_HAS_LOCATION != 0 {
+        // A declared location that does not fit means the capture is
+        // truncated; every later offset would be wrong.
+        let lon_offset = offset.checked_add(4)?;
+        let lat = read_i32_le(data, offset).ok()?;
+        let lon = read_i32_le(data, lon_offset).ok()?;
+        offset = offset.checked_add(LOCATION_LEN)?;
+        (Some(lat), Some(lon))
+    } else {
+        (None, None)
+    };
+
+    if flags & FLAG_HAS_FEATURE1 != 0 {
+        offset = offset.checked_add(FEATURE_BLOCK_LEN)?;
+    }
+    if flags & FLAG_HAS_FEATURE2 != 0 {
+        offset = offset.checked_add(FEATURE_BLOCK_LEN)?;
+    }
+
+    let name = if flags & FLAG_HAS_NAME != 0 && data.len() > offset {
+        // jonesy:allow(overflow) -- guarded by `data.len() > offset` above
+        Some(read_string(data, offset, data.len() - offset))
+    } else {
+        None
+    };
+
+    Some(RawAdvertisement {
+        public_key,
+        timestamp,
+        signature,
+        adv_type,
+        lat,
+        lon,
+        name,
+    })
 }
 
 /// Encode coordinates as microdegrees
@@ -1235,5 +1384,152 @@ mod tests {
         let info = parse_device_info(&data);
         // 200 * 2 would overflow u8, but we use saturating_mul
         assert_eq!(info.max_contacts, Some(255)); // Saturated
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_flood_no_transport() {
+        // route=Flood, payload_type=TextMsg, payload_ver=0
+        let header_byte: u8 =
+            ((PayloadType::TextMsg as u8) << PAYLOAD_TYPE_SHIFT) | RouteType::Flood as u8;
+        // path_hash_size=1 (bits 6-7 = 0b00), path_len=2
+        let path_byte = 0b00_000010;
+        let data = [header_byte, path_byte, 0xAA, 0xBB, 0xCC, 0xDD];
+
+        let (header, remaining) = parse_mesh_packet_header(&data).unwrap();
+        assert_eq!(header.route_type, RouteType::Flood);
+        assert_eq!(header.payload_type, PayloadType::TextMsg);
+        assert_eq!(header.payload_version, 0);
+        assert!(header.transport_code.is_none());
+        assert_eq!(header.path_len, 2);
+        assert_eq!(header.path_hash_size, 1);
+        assert_eq!(header.path, vec![0xAA, 0xBB]);
+        assert_eq!(remaining, &[0xCC, 0xDD]);
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_with_transport_code() {
+        // route=TransportFlood, payload_type=Advert, payload_ver=1
+        let header_byte = (1u8 << PAYLOAD_VERSION_SHIFT)
+            | ((PayloadType::Advert as u8) << PAYLOAD_TYPE_SHIFT)
+            | RouteType::TransportFlood as u8;
+        // path_hash_size=2 (bits 6-7 = 0b01 -> +1), path_len=1
+        let path_byte = 0b01_000001;
+        let data = [
+            header_byte, // header
+            0x11,
+            0x22,
+            0x33,
+            0x44,      // transport code
+            path_byte, // path descriptor
+            0x01,
+            0x02, // path (1 hop * 2 bytes)
+            0x99, // remaining inner payload
+        ];
+
+        let (header, remaining) = parse_mesh_packet_header(&data).unwrap();
+        assert_eq!(header.route_type, RouteType::TransportFlood);
+        assert_eq!(header.payload_type, PayloadType::Advert);
+        assert_eq!(header.payload_version, 1);
+        assert_eq!(header.transport_code, Some([0x11, 0x22, 0x33, 0x44]));
+        assert_eq!(header.path_len, 1);
+        assert_eq!(header.path_hash_size, 2);
+        assert_eq!(header.path, vec![0x01, 0x02]);
+        assert_eq!(remaining, &[0x99]);
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_empty() {
+        assert!(parse_mesh_packet_header(&[]).is_none());
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_missing_path_byte() {
+        // Direct route, no transport code, but no path byte follows
+        let data = [2u8];
+        assert!(parse_mesh_packet_header(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_path_truncated() {
+        // path_len=5, path_hash_size=1 declared, but no path bytes follow
+        let data = [1u8, 0b00_000101];
+        assert!(parse_mesh_packet_header(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_mesh_packet_header_missing_transport_code() {
+        // TransportDirect route requires a 4-byte transport code that isn't present
+        let data = [3u8, 0x11, 0x22];
+        assert!(parse_mesh_packet_header(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_raw_advertisement_with_name() {
+        let mut data = vec![0u8; MIN_LEN];
+        data[0..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // pubkey prefix
+        data[TIMESTAMP_OFFSET..TIMESTAMP_OFFSET + 4].copy_from_slice(&123456u32.to_le_bytes());
+        data[SIGNATURE_OFFSET..SIGNATURE_OFFSET + 4].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]); // signature prefix
+        data[FLAGS_OFFSET] = FLAG_HAS_NAME;
+        data.extend_from_slice(b"Node1");
+
+        let adv = parse_raw_advertisement(&data).unwrap();
+        assert_eq!(&adv.public_key[0..6], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        assert_eq!(adv.timestamp, 123456);
+        assert_eq!(&adv.signature[0..4], &[0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(adv.adv_type, 0);
+        assert!(adv.lat.is_none());
+        assert!(adv.lon.is_none());
+        assert_eq!(adv.name.as_deref(), Some("Node1"));
+    }
+
+    #[test]
+    fn test_parse_raw_advertisement_with_location() {
+        let mut data = vec![0u8; MIN_LEN];
+        data[FLAGS_OFFSET] = 1 | FLAG_HAS_LOCATION; // adv_type=1, has location
+        data.extend_from_slice(&37774900i32.to_le_bytes());
+        data.extend_from_slice(&(-122419400i32).to_le_bytes());
+
+        let adv = parse_raw_advertisement(&data).unwrap();
+        assert_eq!(adv.adv_type, 1);
+        assert_eq!(adv.lat, Some(37774900));
+        assert_eq!(adv.lon, Some(-122419400));
+        assert!(adv.name.is_none());
+    }
+
+    #[test]
+    fn test_parse_raw_advertisement_skips_unknown_feature_blocks() {
+        // flags: feature1 + feature2 + name, no location. Each feature
+        // block is 2 bytes we don't decode but must still skip correctly,
+        // otherwise the name would be read from the wrong offset (garbled,
+        // or misaligned into the feature bytes).
+        let mut data = vec![0u8; MIN_LEN];
+        data[FLAGS_OFFSET] = FLAG_HAS_FEATURE1 | FLAG_HAS_FEATURE2 | FLAG_HAS_NAME;
+        data.extend_from_slice(&[0xAA, 0xAA]); // feature1, skipped
+        data.extend_from_slice(&[0xBB, 0xBB]); // feature2, skipped
+        data.extend_from_slice(b"Node2");
+
+        let adv = parse_raw_advertisement(&data).unwrap();
+        assert!(adv.lat.is_none());
+        assert!(adv.lon.is_none());
+        assert_eq!(adv.name.as_deref(), Some("Node2"));
+    }
+
+    #[test]
+    fn test_parse_raw_advertisement_too_short() {
+        let data = vec![0u8; MIN_LEN - 1];
+        assert!(parse_raw_advertisement(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_raw_advertisement_truncated_location_fails() {
+        // flags: has location (0x10) and name (0x80), but only 4 trailing
+        // bytes — not enough for the 8-byte lat/lon. Must be rejected as a
+        // parse failure rather than silently misreading the name from
+        // inside the truncated location bytes.
+        let mut data = vec![0u8; MIN_LEN];
+        data[FLAGS_OFFSET] = FLAG_HAS_LOCATION | FLAG_HAS_NAME;
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+
+        assert!(parse_raw_advertisement(&data).is_none());
     }
 }

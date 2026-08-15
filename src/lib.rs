@@ -79,7 +79,7 @@ pub use events::{
     MsgSentInfo, Subscription,
 };
 pub use meshcore::MeshCore;
-pub use packets::{AnonReqType, BinaryReqType, ControlType, PacketType};
+pub use packets::{AnonReqType, BinaryReqType, ControlType, PacketType, PayloadType, RouteType};
 
 /// Result type alias using the library's Error type
 pub type Result<T> = std::result::Result<T, Error>;

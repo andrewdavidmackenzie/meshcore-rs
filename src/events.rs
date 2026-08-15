@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
+use crate::packets::{PayloadType, RouteType};
 use crate::CHANNEL_SECRET_LEN;
 
 /// Event types emitted by MeshCore
@@ -147,8 +148,10 @@ pub enum EventPayload {
     Stats(StatsData),
     /// AutoAdd config
     AutoAddConfig { flags: u8 },
-    /// RF log data
+    /// RF log data: every packet the radio receives (see [`LogData`])
     LogData(LogData),
+    /// Custom raw-data packet addressed to this node (see [`RawPacketData`])
+    RawData(RawPacketData),
 }
 
 /// Contact information
@@ -555,14 +558,93 @@ pub enum StatsCategory {
     Packets,
 }
 
-/// RF log data from the device
-#[derive(Debug, Clone)]
+/// RF log data from the device: pushed automatically for *every* packet the
+/// node's radio receives (see [`crate::EventType::LogData`]), regardless of
+/// whether the packet was addressed to it. Unlike [`RawPacketData`], no
+/// specific payload type or routing is required to trigger this.
+#[derive(Debug, Clone, Default)]
 pub struct LogData {
     /// Signal-to-noise ratio (signed byte / 4.0)
     pub snr: f32,
     /// Received signal strength indicator (dBm)
     pub rssi: i16,
-    /// Raw RF payload
+    /// Decoded mesh packet header, or `None` if the payload was too short
+    /// to contain one
+    pub header: Option<MeshPacketHeader>,
+    /// Advertiser identity, populated when `header.payload_type` is
+    /// [`PayloadType::Advert`] and the inner payload could be decoded
+    pub advertisement: Option<RawAdvertisement>,
+    /// Inner packet payload, after stripping the header and path. Opaque
+    /// (and typically encrypted) for message and channel payload types.
+    pub payload: Vec<u8>,
+}
+
+/// Decoded over-the-air MeshCore packet header, as embedded at the start of
+/// a [`LogData`] capture.
+#[derive(Debug, Clone)]
+pub struct MeshPacketHeader {
+    /// Routing strategy used for this packet
+    pub route_type: RouteType,
+    /// Type of the inner payload
+    pub payload_type: PayloadType,
+    /// Payload format version (2-bit field)
+    pub payload_version: u8,
+    /// Transport code, present only for [`RouteType::TransportFlood`] and
+    /// [`RouteType::TransportDirect`] routes
+    pub transport_code: Option<[u8; 4]>,
+    /// Number of hops recorded in `path`
+    pub path_len: u8,
+    /// Size in bytes of each hop hash in `path` (1-4)
+    pub path_hash_size: u8,
+    /// Raw hop hashes, `path_len * path_hash_size` bytes
+    pub path: Vec<u8>,
+}
+
+/// Node identity broadcast in a raw ADVERT payload overheard on the mesh.
+///
+/// Unlike [`AdvertisementData`] (the companion's own summarized push, keyed
+/// by a 6-byte prefix), this carries the full advertisement as it appears
+/// on air, including the advertiser's full public key and signature.
+#[derive(Debug, Clone)]
+pub struct RawAdvertisement {
+    /// Advertiser's full 32-byte public key
+    pub public_key: [u8; 32],
+    /// Advertisement timestamp (seconds)
+    pub timestamp: u32,
+    /// Signature over the advertisement (64 bytes)
+    pub signature: [u8; 64],
+    /// Advertiser type (bits 0-3 of the flags byte; see [`Contact::contact_type`])
+    pub adv_type: u8,
+    /// Latitude in microdegrees, if the advertiser included its location
+    pub lat: Option<i32>,
+    /// Longitude in microdegrees, if the advertiser included its location
+    pub lon: Option<i32>,
+    /// Advertised name, if included
+    pub name: Option<String>,
+}
+
+/// Raw custom-data packet received by the node, pushed as
+/// [`crate::EventType::RawData`].
+///
+/// Unlike [`LogData`], this is *not* a general packet monitor: the firmware
+/// only emits it for directly-routed, not-yet-seen packets whose payload
+/// type is `RAW_CUSTOM` — i.e. packets sent by another application via the
+/// companion `SEND_RAW_DATA` command, addressed to this node. Regular mesh
+/// traffic (text messages, adverts, telemetry, ...) never triggers this
+/// event; subscribe to [`crate::EventType::LogData`] instead to observe all
+/// received packets.
+///
+/// `payload` is opaque application data, not a mesh packet: the firmware
+/// has already parsed and stripped the mesh header, transport code and path
+/// before delivering it here, so — unlike `LogData` — there is no header to
+/// decode.
+#[derive(Debug, Clone)]
+pub struct RawPacketData {
+    /// Signal-to-noise ratio of the received packet
+    pub snr: f32,
+    /// Received signal strength indicator (dBm)
+    pub rssi: i16,
+    /// Opaque `RAW_CUSTOM` application payload.
     pub payload: Vec<u8>,
 }
 
@@ -1439,6 +1521,7 @@ mod tests {
             snr: 10.5,
             rssi: -80,
             payload: vec![0x01, 0x02, 0x03],
+            ..Default::default()
         });
     }
 
@@ -1448,6 +1531,7 @@ mod tests {
             snr: 12.25,
             rssi: -75,
             payload: vec![0xAA, 0xBB, 0xCC],
+            ..Default::default()
         };
         let cloned = log_data.clone();
         assert_eq!(cloned.snr, 12.25);
@@ -1461,6 +1545,7 @@ mod tests {
             snr: 5.5,
             rssi: -90,
             payload: vec![0x01, 0x02],
+            ..Default::default()
         };
         let debug_str = format!("{:?}", log_data);
         assert!(debug_str.contains("snr"));
@@ -1475,7 +1560,7 @@ mod tests {
         let log_data = LogData {
             snr: 10.0, // Would be byte value 40
             rssi: -85,
-            payload: vec![],
+            ..Default::default()
         };
         assert_eq!(log_data.snr, 10.0);
     }
@@ -1486,17 +1571,14 @@ mod tests {
             snr: -5.25, // Would be byte value -21
             rssi: -100,
             payload: vec![0x01],
+            ..Default::default()
         };
         assert_eq!(log_data.snr, -5.25);
     }
 
     #[test]
     fn test_log_data_empty_payload() {
-        let log_data = LogData {
-            snr: 0.0,
-            rssi: 0,
-            payload: vec![],
-        };
+        let log_data = LogData::default();
         assert!(log_data.payload.is_empty());
     }
 }
