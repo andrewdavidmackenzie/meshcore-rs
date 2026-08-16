@@ -546,11 +546,15 @@ impl MessageReader {
                 self.dispatcher.emit(event).await;
             }
 
-            PacketType::BinaryReq => {}
-            PacketType::FactoryReset => {}
-            PacketType::PathDiscovery => {}
-            PacketType::SetFloodScope => {}
-            PacketType::SendControlData => {}
+            // Command codes (app -> radio direction only). The radio responds
+            // with different packet types (Ok, BinaryResponse, etc.), never
+            // by echoing these codes back. They exist in PacketType because
+            // the same byte values serve as command identifiers on the wire.
+            PacketType::BinaryReq
+            | PacketType::FactoryReset
+            | PacketType::PathDiscovery
+            | PacketType::SetFloodScope
+            | PacketType::SendControlData => {}
 
             PacketType::RawData => {
                 let raw_data = parse_raw_data(payload)?;
@@ -564,6 +568,7 @@ impl MessageReader {
                 self.dispatcher.emit(event).await;
             }
 
+            // TODO: parse path discovery response (#74)
             PacketType::PathDiscoveryResponse => {}
             _ => {
                 tracing::debug!("Unknown packet type: {:?}", packet_type);
@@ -2587,5 +2592,30 @@ mod tests {
         let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
         // Falls back to generic BinaryResponse
         assert_eq!(event.event_type, EventType::BinaryResponse);
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_command_only_packet_types_ignored() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // These are outbound command codes that should be silently ignored
+        // when received as inbound packets.
+        for packet_type_byte in [
+            PacketType::BinaryReq as u8,
+            PacketType::FactoryReset as u8,
+            PacketType::PathDiscovery as u8,
+            PacketType::SetFloodScope as u8,
+            PacketType::SendControlData as u8,
+        ] {
+            reader.handle_rx(vec![packet_type_byte]).await.unwrap();
+        }
+
+        // None of them should emit any event
+        let result = tokio::time::timeout(Duration::from_millis(50), receiver.recv()).await;
+        assert!(
+            result.is_err(),
+            "Command-only packet types should not emit events"
+        );
     }
 }
