@@ -61,6 +61,7 @@ const CMD_SIGN_FINISH: u8 = 35;
 const CMD_GET_CUSTOM_VARS: u8 = 40;
 const CMD_SET_CUSTOM_VAR: u8 = 41;
 const CMD_SEND_BINARY_REQ: u8 = 50;
+const CMD_PATH_DISCOVERY: u8 = 52;
 const CMD_SET_FLOOD_SCOPE: u8 = 54;
 
 /// Destination type for commands
@@ -486,6 +487,53 @@ impl CommandHandler {
         }
         self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
+    }
+
+    /// Send a path discovery request to a destination node.
+    ///
+    /// Sends the command and waits for a `PathDiscoveryResponse` event
+    /// containing the outbound and inbound paths to the destination.
+    ///
+    /// Format: [CMD_PATH_DISCOVERY=0x34][0x00][pubkey: 32]
+    pub async fn send_path_discovery(
+        &self,
+        dest: impl Into<Destination>,
+    ) -> Result<PathDiscoveryResponseData> {
+        self.send_path_discovery_with_timeout(dest, self.default_timeout)
+            .await
+    }
+
+    /// Send a path discovery request with a custom timeout.
+    pub async fn send_path_discovery_with_timeout(
+        &self,
+        dest: impl Into<Destination>,
+        timeout: Duration,
+    ) -> Result<PathDiscoveryResponseData> {
+        let dest: Destination = dest.into();
+        let pubkey = dest.public_key().ok_or_else(|| {
+            Error::invalid_param("Path discovery requires a full 32-byte public key")
+        })?;
+
+        let mut data = vec![CMD_PATH_DISCOVERY, 0x00];
+        data.extend_from_slice(&pubkey);
+
+        // First wait for MsgSent confirmation
+        self.send_with_timeout(&data, Some(EventType::MsgSent), timeout)
+            .await?;
+
+        // Then wait for the PathDiscoveryResponse
+        let event = self
+            .wait_for_event(
+                Some(EventType::PathDiscoveryResponse),
+                HashMap::new(),
+                timeout,
+            )
+            .await?;
+
+        match event.payload {
+            EventPayload::PathDiscoveryResponse(resp) => Ok(resp),
+            _ => Err(Error::protocol("Unexpected response to path discovery")),
+        }
     }
 
     /// Export private key
@@ -1281,6 +1329,7 @@ mod tests {
         assert_eq!(CMD_GET_CUSTOM_VARS, 40);
         assert_eq!(CMD_SET_CUSTOM_VAR, 41);
         assert_eq!(CMD_SEND_BINARY_REQ, 50);
+        assert_eq!(CMD_PATH_DISCOVERY, 52);
     }
 
     // ========== CommandHandler Tests with Mock Infrastructure ==========
@@ -2112,6 +2161,93 @@ mod tests {
         let dest = vec![0xAAu8; 32];
         let result = handler
             .request_neighbours_with_timeout(dest, 10, 0, 0, 33, Duration::from_millis(100))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_send_path_discovery_wire_format() {
+        let (handler, mut rx, _dispatcher) = create_test_handler();
+
+        let dest = vec![0xAAu8; 32];
+        // The command will timeout since no response comes, but we can
+        // check the wire format of what was sent.
+        let _result = handler
+            .send_path_discovery_with_timeout(dest, Duration::from_millis(50))
+            .await;
+
+        // Verify the sent data format
+        let sent = rx.recv().await.unwrap();
+        assert_eq!(sent[0], CMD_PATH_DISCOVERY); // command byte
+        assert_eq!(sent[1], 0x00); // reserved byte
+        assert_eq!(&sent[2..34], &[0xAA; 32]); // 32-byte public key
+        assert_eq!(sent.len(), 34); // total: 1 + 1 + 32
+    }
+
+    #[tokio::test]
+    async fn test_send_path_discovery_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            // Consume the sent command
+            let _sent = rx.recv().await.unwrap();
+
+            // Emit MsgSent response
+            dispatcher_clone
+                .emit(
+                    MeshCoreEvent::new(
+                        EventType::MsgSent,
+                        EventPayload::MsgSent(MsgSentInfo {
+                            message_type: 0,
+                            expected_ack: [0x01, 0x02, 0x03, 0x04],
+                            suggested_timeout: 5000,
+                        }),
+                    )
+                    .with_attribute("tag", "01020304".to_string()),
+                )
+                .await;
+
+            // Small delay then emit PathDiscoveryResponse
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            dispatcher_clone
+                .emit(
+                    MeshCoreEvent::new(
+                        EventType::PathDiscoveryResponse,
+                        EventPayload::PathDiscoveryResponse(PathDiscoveryResponseData {
+                            pubkey_prefix: [0xAA; 6],
+                            out_path_len: 1,
+                            out_path_hash_len: 1,
+                            out_path: vec![0x11],
+                            in_path_len: 0,
+                            in_path_hash_len: 1,
+                            in_path: vec![],
+                        }),
+                    )
+                    .with_attribute("prefix", "aaaaaaaaaaaa".to_string()),
+                )
+                .await;
+        });
+
+        let dest = vec![0xAAu8; 32];
+        let result = handler
+            .send_path_discovery_with_timeout(dest, Duration::from_millis(500))
+            .await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.pubkey_prefix, [0xAA; 6]);
+        assert_eq!(resp.out_path_len, 1);
+        assert_eq!(resp.out_path, vec![0x11]);
+    }
+
+    #[tokio::test]
+    async fn test_send_path_discovery_requires_full_key() {
+        let (handler, _rx, _dispatcher) = create_test_handler();
+
+        // 6-byte prefix should fail -- path discovery needs full 32-byte key
+        let dest: &[u8] = &[0xAA; 6];
+        let result = handler
+            .send_path_discovery_with_timeout(dest, Duration::from_millis(50))
             .await;
         assert!(result.is_err());
     }
