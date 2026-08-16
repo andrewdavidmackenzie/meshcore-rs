@@ -64,6 +64,7 @@ const CMD_SEND_BINARY_REQ: u8 = 50;
 const CMD_FACTORY_RESET: u8 = 51;
 const CMD_PATH_DISCOVERY: u8 = 52;
 const CMD_SET_FLOOD_SCOPE: u8 = 54;
+const CMD_SEND_CONTROL_DATA: u8 = 55;
 
 /// Destination type for commands
 #[derive(Debug, Clone)]
@@ -547,6 +548,16 @@ impl CommandHandler {
             EventPayload::PathDiscoveryResponse(resp) => Ok(resp),
             _ => Err(Error::protocol("Unexpected response to path discovery")),
         }
+    }
+
+    /// Send control data to the radio.
+    ///
+    /// Format: [CMD_SEND_CONTROL_DATA=0x37][data...]
+    pub async fn send_control_data(&self, control_data: &[u8]) -> Result<()> {
+        let mut data = vec![CMD_SEND_CONTROL_DATA];
+        data.extend_from_slice(control_data);
+        self.send(&data, Some(EventType::Ok)).await?;
+        Ok(())
     }
 
     /// Export private key
@@ -1344,6 +1355,7 @@ mod tests {
         assert_eq!(CMD_SEND_BINARY_REQ, 50);
         assert_eq!(CMD_FACTORY_RESET, 51);
         assert_eq!(CMD_PATH_DISCOVERY, 52);
+        assert_eq!(CMD_SEND_CONTROL_DATA, 55);
     }
 
     // ========== CommandHandler Tests with Mock Infrastructure ==========
@@ -1729,13 +1741,27 @@ mod tests {
     async fn test_factory_reset() {
         let (handler, mut rx, dispatcher) = create_test_handler();
 
-        // Spawn a task to simulate an Ok response
         tokio::spawn(async move {
             let _sent = rx.recv().await.unwrap();
             dispatcher.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler.factory_reset().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_control_data() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SEND_CONTROL_DATA);
+            assert_eq!(&sent[1..], &[0x01, 0x02, 0x03]);
+            dispatcher.emit(MeshCoreEvent::ok()).await;
+        });
+
+        let result = handler.send_control_data(&[0x01, 0x02, 0x03]).await;
         assert!(result.is_ok());
     }
 
