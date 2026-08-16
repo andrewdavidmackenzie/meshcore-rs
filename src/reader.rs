@@ -359,14 +359,7 @@ impl MessageReader {
             }
 
             PacketType::CustomVars => {
-                // Parse key-value pairs
-                let mut vars = HashMap::new();
-                let text = String::from_utf8_lossy(payload);
-                for line in text.lines() {
-                    if let Some((key, value)) = line.split_once('=') {
-                        vars.insert(key.to_string(), value.to_string());
-                    }
-                }
+                let vars = parse_custom_vars(payload);
                 let event =
                     MeshCoreEvent::new(EventType::CustomVars, EventPayload::CustomVars(vars));
                 self.dispatcher.emit(event).await;
@@ -436,51 +429,39 @@ impl MessageReader {
             }
 
             PacketType::StatusResponse => {
-                if payload.len() >= 58 {
-                    // The first 6 bytes are the sender prefix
-                    let sender_prefix: [u8; 6] = read_bytes(payload, 0).unwrap_or([0; 6]);
-                    if let Ok(status) = parse_status(&payload[6..], sender_prefix) {
-                        let tag_hex = hex_encode(&sender_prefix);
-                        let event = MeshCoreEvent::new(
-                            EventType::StatusResponse,
-                            EventPayload::Status(status),
-                        )
-                        .with_attribute("prefix", tag_hex);
-                        self.dispatcher.emit(event).await;
-                    }
+                if let Some(frame) = parse_status_response(payload) {
+                    let prefix_hex = hex_encode(&frame.sender_prefix);
+                    let event = MeshCoreEvent::new(
+                        EventType::StatusResponse,
+                        EventPayload::Status(frame.status),
+                    )
+                    .with_attribute("prefix", prefix_hex);
+                    self.dispatcher.emit(event).await;
                 }
             }
 
             PacketType::TelemetryResponse => {
-                // The first bytes are tag, the rest is LPP data
-                if payload.len() >= 4 {
-                    let tag: [u8; 4] = read_bytes(payload, 0).unwrap_or([0; 4]);
-                    let telemetry = payload[4..].to_vec();
+                if let Some(frame) = parse_telemetry_response(payload) {
                     let event = MeshCoreEvent::new(
                         EventType::TelemetryResponse,
-                        EventPayload::Telemetry(telemetry),
+                        EventPayload::Telemetry(frame.data),
                     )
-                    .with_attribute("tag", hex_encode(&tag));
+                    .with_attribute("tag", hex_encode(&frame.tag));
                     self.dispatcher.emit(event).await;
                 }
             }
 
             PacketType::BinaryResponse => {
-                // Firmware layout: [subtype: 1][tag: 4][data...]
-                // Skip the subtype byte; tag lives at offset 1, data from offset 5.
-                // See meshcore_py reader.py:727:
-                //   dbuf.read(1); tag = dbuf.read(4).hex(); response_data = dbuf.read()
-                if payload.len() >= 5 {
-                    let tag: [u8; 4] = read_bytes(payload, 1).unwrap_or([0; 4]);
-                    let data = payload[5..].to_vec();
+                if let Some(frame) = parse_binary_response_frame(payload) {
+                    let tag = frame.tag;
+                    let data = frame.data;
+                    let tag_hex = hex_encode(&tag);
 
                     // Check if we have a pending request for this tag
-                    let tag_hex = hex_encode(&tag);
                     let request = self.pending_requests.write().await.remove(&tag_hex);
 
-                    if let Some(req) = request {
-                        // Emit typed event based on the request type
-                        let event = match req.request_type {
+                    let event = if let Some(req) = request {
+                        match req.request_type {
                             BinaryReqType::Status => {
                                 if let Ok(status) = parse_status(&data, [0; 6]) {
                                     MeshCoreEvent::new(
@@ -535,18 +516,15 @@ impl MessageReader {
                                 EventPayload::BinaryResponse { tag, data },
                             ),
                         }
-                        .with_attribute("tag", tag_hex);
-
-                        self.dispatcher.emit(event).await;
                     } else {
-                        // No matching request, emit generic binary response
-                        let event = MeshCoreEvent::new(
+                        MeshCoreEvent::new(
                             EventType::BinaryResponse,
                             EventPayload::BinaryResponse { tag, data },
                         )
-                        .with_attribute("tag", tag_hex);
-                        self.dispatcher.emit(event).await;
                     }
+                    .with_attribute("tag", tag_hex);
+
+                    self.dispatcher.emit(event).await;
                 }
             }
 

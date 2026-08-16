@@ -1,5 +1,7 @@
 //! Binary parsing utilities for MeshCore protocol
 
+use std::collections::HashMap;
+
 use crate::error::Error;
 use crate::events::{
     AclEntry, AdvertResponseData, AdvertisementData, BatteryInfo, ChannelInfoData, ChannelMessage,
@@ -1115,6 +1117,129 @@ pub fn parse_discover_response(payload: &[u8]) -> Vec<DiscoverEntry> {
         offset += DISCOVER_ENTRY_LEN;
     }
     entries
+}
+
+// --- StatusResponse payload layout ---
+
+/// Length of the sender prefix in a StatusResponse payload.
+const STATUS_RESP_PREFIX_LEN: usize = 6;
+/// Minimum length for a StatusResponse payload (prefix + status data).
+const STATUS_RESP_MIN_LEN: usize = 58;
+
+/// Parsed status response: sender prefix and status data.
+pub struct StatusResponseFrame {
+    /// 6-byte public key prefix of the sender.
+    pub sender_prefix: [u8; 6],
+    /// Parsed status data.
+    pub status: StatusData,
+}
+
+/// Parse a [`StatusResponseFrame`] from a `PacketType::StatusResponse`
+/// payload.
+///
+/// Returns `None` if the payload is too short or the status data cannot
+/// be parsed.
+pub fn parse_status_response(payload: &[u8]) -> Option<StatusResponseFrame> {
+    if payload.len() < STATUS_RESP_MIN_LEN {
+        return None;
+    }
+
+    let sender_prefix: [u8; 6] = read_bytes(payload, 0).ok()?;
+    let status = parse_status(&payload[STATUS_RESP_PREFIX_LEN..], sender_prefix).ok()?;
+
+    Some(StatusResponseFrame {
+        sender_prefix,
+        status,
+    })
+}
+
+// --- TelemetryResponse payload layout ---
+
+/// Minimum length for a TelemetryResponse payload (4-byte tag).
+const TELEMETRY_RESP_MIN_LEN: usize = 4;
+/// Offset where the LPP telemetry data begins.
+const TELEMETRY_RESP_DATA_OFFSET: usize = 4;
+
+/// Parsed telemetry response: tag and LPP data.
+pub struct TelemetryResponseFrame {
+    /// The 4-byte request tag.
+    pub tag: [u8; 4],
+    /// LPP telemetry data.
+    pub data: Vec<u8>,
+}
+
+/// Parse a [`TelemetryResponseFrame`] from a
+/// `PacketType::TelemetryResponse` payload.
+///
+/// Returns `None` if the payload is too short.
+pub fn parse_telemetry_response(payload: &[u8]) -> Option<TelemetryResponseFrame> {
+    if payload.len() < TELEMETRY_RESP_MIN_LEN {
+        return None;
+    }
+
+    let tag: [u8; 4] = read_bytes(payload, 0).ok()?;
+    let data = payload[TELEMETRY_RESP_DATA_OFFSET..].to_vec();
+
+    Some(TelemetryResponseFrame { tag, data })
+}
+
+// --- CustomVars payload ---
+
+/// Parse custom variables from a `PacketType::CustomVars` payload.
+///
+/// The payload is UTF-8 text with `key=value` pairs separated by
+/// newlines.
+pub fn parse_custom_vars(payload: &[u8]) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    let text = String::from_utf8_lossy(payload);
+    for line in text.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            vars.insert(key.to_string(), value.to_string());
+        }
+    }
+    vars
+}
+
+// --- BinaryResponse frame layout ---
+//
+// Firmware layout: [subtype: 1][tag: 4][data...]
+// The subtype byte is skipped; the tag lives at offset 1 and the
+// response data starts at offset 5.
+
+/// Length of the subtype byte that precedes the tag.
+const BINARY_RESP_SUBTYPE_LEN: usize = 1;
+/// Length of the 4-byte request tag echoed back in the response.
+const BINARY_RESP_TAG_LEN: usize = 4;
+/// Offset of the tag within the BinaryResponse payload.
+const BINARY_RESP_TAG_OFFSET: usize = BINARY_RESP_SUBTYPE_LEN;
+/// Offset where the response data begins.
+const BINARY_RESP_DATA_OFFSET: usize = BINARY_RESP_TAG_OFFSET + BINARY_RESP_TAG_LEN;
+/// Minimum payload length (subtype + tag).
+const BINARY_RESP_MIN_LEN: usize = BINARY_RESP_DATA_OFFSET;
+
+/// Parsed binary response frame: tag and data extracted from the raw
+/// `PacketType::BinaryResponse` payload.
+pub struct BinaryResponseFrame {
+    /// The 4-byte request tag echoed by the firmware.
+    pub tag: [u8; 4],
+    /// The response data (everything after the tag).
+    pub data: Vec<u8>,
+}
+
+/// Parse the frame envelope of a `PacketType::BinaryResponse` payload,
+/// extracting the tag and data.
+///
+/// Returns `None` if the payload is too short to contain the subtype
+/// byte and the 4-byte tag.
+pub fn parse_binary_response_frame(payload: &[u8]) -> Option<BinaryResponseFrame> {
+    if payload.len() < BINARY_RESP_MIN_LEN {
+        return None;
+    }
+
+    let tag: [u8; 4] = read_bytes(payload, BINARY_RESP_TAG_OFFSET).ok()?;
+    let data = payload[BINARY_RESP_DATA_OFFSET..].to_vec();
+
+    Some(BinaryResponseFrame { tag, data })
 }
 
 #[cfg(test)]
@@ -2294,5 +2419,119 @@ mod tests {
         let data = vec![0u8; 37];
         let entries = parse_discover_response(&data);
         assert!(entries.is_empty());
+    }
+
+    // ========== parse_status_response tests ==========
+
+    #[test]
+    fn test_parse_status_response_too_short() {
+        assert!(parse_status_response(&[]).is_none());
+        assert!(parse_status_response(&[0; 57]).is_none());
+    }
+
+    #[test]
+    fn test_parse_status_response_valid() {
+        // Build a valid StatusResponse payload: 6-byte prefix + status data
+        let mut data = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66]; // sender prefix
+                                                                 // Status data: battery_mv(2) + tx_queue(2) + noise(2) + rssi(2) + recv(4)
+                                                                 // + sent(4) + airtime(4) + uptime(4) + flood(4) + direct(4) + snr(1)
+                                                                 // + dup(4) + rx_airtime(4) + padding... = at least 52 bytes
+        let mut status_data = vec![0u8; 52];
+        // battery_mv = 3700 at offset 0
+        status_data[0..2].copy_from_slice(&3700u16.to_le_bytes());
+        data.extend_from_slice(&status_data);
+        let frame = parse_status_response(&data).unwrap();
+        assert_eq!(frame.sender_prefix, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        assert_eq!(frame.status.battery_mv, 3700);
+    }
+
+    // ========== parse_telemetry_response tests ==========
+
+    #[test]
+    fn test_parse_telemetry_response_too_short() {
+        assert!(parse_telemetry_response(&[]).is_none());
+        assert!(parse_telemetry_response(&[0; 3]).is_none());
+    }
+
+    #[test]
+    fn test_parse_telemetry_response_tag_only() {
+        let data = [0xAA, 0xBB, 0xCC, 0xDD];
+        let frame = parse_telemetry_response(&data).unwrap();
+        assert_eq!(frame.tag, [0xAA, 0xBB, 0xCC, 0xDD]);
+        assert!(frame.data.is_empty());
+    }
+
+    #[test]
+    fn test_parse_telemetry_response_with_data() {
+        let mut data = vec![0x01, 0x02, 0x03, 0x04]; // tag
+        data.extend_from_slice(&[0x10, 0x20, 0x30]); // LPP data
+        let frame = parse_telemetry_response(&data).unwrap();
+        assert_eq!(frame.tag, [0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(frame.data, vec![0x10, 0x20, 0x30]);
+    }
+
+    // ========== parse_custom_vars tests ==========
+
+    #[test]
+    fn test_parse_custom_vars_empty() {
+        let vars = parse_custom_vars(&[]);
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn test_parse_custom_vars_single() {
+        let vars = parse_custom_vars(b"key=value");
+        assert_eq!(vars.get("key").unwrap(), "value");
+    }
+
+    #[test]
+    fn test_parse_custom_vars_multiple() {
+        let vars = parse_custom_vars(b"a=1\nb=2\nc=3");
+        assert_eq!(vars.len(), 3);
+        assert_eq!(vars.get("a").unwrap(), "1");
+        assert_eq!(vars.get("b").unwrap(), "2");
+        assert_eq!(vars.get("c").unwrap(), "3");
+    }
+
+    #[test]
+    fn test_parse_custom_vars_no_equals_skipped() {
+        let vars = parse_custom_vars(b"good=yes\nbadline\nalso=ok");
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars.get("good").unwrap(), "yes");
+        assert_eq!(vars.get("also").unwrap(), "ok");
+    }
+
+    // ========== parse_binary_response_frame tests ==========
+
+    #[test]
+    fn test_parse_binary_response_frame_too_short() {
+        assert!(parse_binary_response_frame(&[]).is_none());
+        assert!(parse_binary_response_frame(&[0; 4]).is_none());
+    }
+
+    #[test]
+    fn test_parse_binary_response_frame_minimal() {
+        // subtype(1) + tag(4) = 5 bytes, no data
+        let data = [0xFF, 0x01, 0x02, 0x03, 0x04];
+        let frame = parse_binary_response_frame(&data).unwrap();
+        assert_eq!(frame.tag, [0x01, 0x02, 0x03, 0x04]);
+        assert!(frame.data.is_empty());
+    }
+
+    #[test]
+    fn test_parse_binary_response_frame_with_data() {
+        let mut data = vec![0x00]; // subtype (skipped)
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]); // tag
+        data.extend_from_slice(&[0x11, 0x22, 0x33]); // response data
+        let frame = parse_binary_response_frame(&data).unwrap();
+        assert_eq!(frame.tag, [0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(frame.data, vec![0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn test_parse_binary_response_frame_constants() {
+        assert_eq!(BINARY_RESP_TAG_OFFSET, 1);
+        assert_eq!(BINARY_RESP_DATA_OFFSET, 5);
+        assert_eq!(BINARY_RESP_MIN_LEN, 5);
     }
 }
