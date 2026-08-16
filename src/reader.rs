@@ -685,42 +685,13 @@ impl MessageReader {
             }
 
             PacketType::AdvertResponse => {
-                if payload.len() >= 42 {
-                    let tag: [u8; 4] = read_bytes(payload, 0).unwrap_or([0; 4]);
-                    let pubkey: [u8; 32] = read_bytes(payload, 4).unwrap_or([0; 32]);
-                    let adv_type = payload[36];
-                    let node_name = read_string(payload, 37, 32);
-                    let timestamp = read_u32_le(payload, 69).unwrap_or(0);
-                    let flags = if payload.len() > 73 { payload[73] } else { 0 };
-
-                    let (lat, lon, node_desc) = if payload.len() >= 82 {
-                        let lat = Some(read_i32_le(payload, 74).unwrap_or(0));
-                        let lon = Some(read_i32_le(payload, 78).unwrap_or(0));
-                        let desc = if payload.len() > 82 {
-                            Some(read_string(payload, 82, 32))
-                        } else {
-                            None
-                        };
-                        (lat, lon, desc)
-                    } else {
-                        (None, None, None)
-                    };
-
+                if let Some(resp) = parse_advert_response(payload) {
+                    let tag_hex = hex_encode(&resp.tag);
                     let event = MeshCoreEvent::new(
                         EventType::AdvertResponse,
-                        EventPayload::AdvertResponse(AdvertResponseData {
-                            tag,
-                            pubkey,
-                            adv_type,
-                            node_name,
-                            timestamp,
-                            flags,
-                            lat,
-                            lon,
-                            node_desc,
-                        }),
+                        EventPayload::AdvertResponse(resp),
                     )
-                    .with_attribute("tag", hex_encode(&tag));
+                    .with_attribute("tag", tag_hex);
                     self.dispatcher.emit(event).await;
                 }
             }

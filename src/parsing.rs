@@ -2,8 +2,8 @@
 
 use crate::error::Error;
 use crate::events::{
-    AclEntry, ChannelMessage, Contact, ContactMessage, DeviceInfoData, MeshPacketHeader, MmaEntry,
-    Neighbour, NeighboursData, RawAdvertisement, SelfInfo, StatusData,
+    AclEntry, AdvertResponseData, ChannelMessage, Contact, ContactMessage, DeviceInfoData,
+    MeshPacketHeader, MmaEntry, Neighbour, NeighboursData, RawAdvertisement, SelfInfo, StatusData,
 };
 use crate::packets::{PayloadType, RouteType};
 use crate::Result;
@@ -782,6 +782,102 @@ pub fn hex_decode(s: &str) -> Result<Vec<u8>> {
 /// Encode bytes as a hex string
 pub fn hex_encode(data: &[u8]) -> String {
     data.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+// --- AdvertResponse wire-format layout ---
+//
+// Byte offsets and sizes for the PacketType::AdvertResponse payload,
+// returned by the device in reply to an advert request.
+
+/// Length of the request tag echoed back in the response.
+const ADVERT_RESP_TAG_LEN: usize = 4;
+/// Length of the 32-byte public key of the advertiser.
+const ADVERT_RESP_PUBKEY_LEN: usize = 32;
+/// Length of the advertisement type field.
+const ADVERT_RESP_ADV_TYPE_LEN: usize = 1;
+/// Fixed width of the node name field (padded / null-terminated).
+const ADVERT_RESP_NODE_NAME_LEN: usize = 32;
+/// Length of the timestamp field (u32 LE).
+const ADVERT_RESP_TIMESTAMP_LEN: usize = 4;
+/// Length of the flags field.
+const ADVERT_RESP_FLAGS_LEN: usize = 1;
+
+const ADVERT_RESP_TAG_OFFSET: usize = 0;
+const ADVERT_RESP_PUBKEY_OFFSET: usize = ADVERT_RESP_TAG_OFFSET + ADVERT_RESP_TAG_LEN;
+const ADVERT_RESP_ADV_TYPE_OFFSET: usize = ADVERT_RESP_PUBKEY_OFFSET + ADVERT_RESP_PUBKEY_LEN;
+const ADVERT_RESP_NODE_NAME_OFFSET: usize = ADVERT_RESP_ADV_TYPE_OFFSET + ADVERT_RESP_ADV_TYPE_LEN;
+const ADVERT_RESP_TIMESTAMP_OFFSET: usize =
+    ADVERT_RESP_NODE_NAME_OFFSET + ADVERT_RESP_NODE_NAME_LEN;
+const ADVERT_RESP_FLAGS_OFFSET: usize = ADVERT_RESP_TIMESTAMP_OFFSET + ADVERT_RESP_TIMESTAMP_LEN;
+
+/// Minimum payload length: tag + pubkey + adv_type + name + timestamp + flags.
+const ADVERT_RESP_MIN_LEN: usize = ADVERT_RESP_FLAGS_OFFSET + ADVERT_RESP_FLAGS_LEN;
+
+/// Offset of the optional latitude field (i32 LE), present when the
+/// payload extends beyond the flags byte.
+const ADVERT_RESP_LAT_OFFSET: usize = ADVERT_RESP_MIN_LEN;
+/// Length of one coordinate field (i32 LE).
+const ADVERT_RESP_COORD_LEN: usize = 4;
+/// Offset of the optional longitude field (i32 LE).
+const ADVERT_RESP_LON_OFFSET: usize = ADVERT_RESP_LAT_OFFSET + ADVERT_RESP_COORD_LEN;
+/// Minimum payload length to include both lat and lon.
+const ADVERT_RESP_LATLON_MIN_LEN: usize = ADVERT_RESP_LON_OFFSET + ADVERT_RESP_COORD_LEN;
+/// Offset of the optional node description field, present when the
+/// payload extends beyond lat/lon.
+const ADVERT_RESP_NODE_DESC_OFFSET: usize = ADVERT_RESP_LATLON_MIN_LEN;
+/// Fixed width of the optional node description field.
+const ADVERT_RESP_NODE_DESC_LEN: usize = 32;
+
+/// Parse an [`AdvertResponseData`] from a raw `PacketType::AdvertResponse`
+/// payload.
+///
+/// Returns `None` if the payload is too short to contain the mandatory
+/// fields (tag + pubkey + adv_type + node_name + timestamp + flags = 74
+/// bytes).
+pub fn parse_advert_response(payload: &[u8]) -> Option<AdvertResponseData> {
+    if payload.len() < ADVERT_RESP_MIN_LEN {
+        return None;
+    }
+
+    let tag: [u8; 4] = read_bytes(payload, ADVERT_RESP_TAG_OFFSET).ok()?;
+    let pubkey: [u8; 32] = read_bytes(payload, ADVERT_RESP_PUBKEY_OFFSET).ok()?;
+    let adv_type = *payload.get(ADVERT_RESP_ADV_TYPE_OFFSET)?;
+    let node_name = read_string(
+        payload,
+        ADVERT_RESP_NODE_NAME_OFFSET,
+        ADVERT_RESP_NODE_NAME_LEN,
+    );
+    let timestamp = read_u32_le(payload, ADVERT_RESP_TIMESTAMP_OFFSET).unwrap_or(0);
+    let flags = *payload.get(ADVERT_RESP_FLAGS_OFFSET).unwrap_or(&0);
+
+    let (lat, lon, node_desc) = if payload.len() >= ADVERT_RESP_LATLON_MIN_LEN {
+        let lat = Some(read_i32_le(payload, ADVERT_RESP_LAT_OFFSET).unwrap_or(0));
+        let lon = Some(read_i32_le(payload, ADVERT_RESP_LON_OFFSET).unwrap_or(0));
+        let desc = if payload.len() > ADVERT_RESP_NODE_DESC_OFFSET {
+            Some(read_string(
+                payload,
+                ADVERT_RESP_NODE_DESC_OFFSET,
+                ADVERT_RESP_NODE_DESC_LEN,
+            ))
+        } else {
+            None
+        };
+        (lat, lon, desc)
+    } else {
+        (None, None, None)
+    };
+
+    Some(AdvertResponseData {
+        tag,
+        pubkey,
+        adv_type,
+        node_name,
+        timestamp,
+        flags,
+        lat,
+        lon,
+        node_desc,
+    })
 }
 
 #[cfg(test)]
@@ -1569,5 +1665,119 @@ mod tests {
         data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
 
         assert!(parse_raw_advertisement(&data).is_none());
+    }
+
+    // ========== parse_advert_response tests ==========
+
+    /// Build a minimal valid AdvertResponse payload (74 bytes: tag + pubkey
+    /// + adv_type + node_name + timestamp + flags).
+    fn build_advert_response_payload() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // tag
+        data.extend_from_slice(&[0xAA; 32]); // pubkey
+        data.push(2); // adv_type
+        let mut name = [0u8; 32];
+        name[..5].copy_from_slice(b"TestN");
+        data.extend_from_slice(&name); // node_name (32 bytes)
+        data.extend_from_slice(&1700000000u32.to_le_bytes()); // timestamp
+        data.push(0x05); // flags
+        data
+    }
+
+    #[test]
+    fn test_parse_advert_response_too_short() {
+        let data = vec![0u8; ADVERT_RESP_MIN_LEN - 1];
+        assert!(parse_advert_response(&data).is_none());
+    }
+
+    #[test]
+    fn test_parse_advert_response_empty() {
+        assert!(parse_advert_response(&[]).is_none());
+    }
+
+    #[test]
+    fn test_parse_advert_response_minimal() {
+        let data = build_advert_response_payload();
+        assert_eq!(data.len(), ADVERT_RESP_MIN_LEN);
+
+        let resp = parse_advert_response(&data).unwrap();
+        assert_eq!(resp.tag, [0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(resp.pubkey, [0xAA; 32]);
+        assert_eq!(resp.adv_type, 2);
+        assert_eq!(resp.node_name, "TestN");
+        assert_eq!(resp.timestamp, 1700000000);
+        assert_eq!(resp.flags, 0x05);
+        assert!(resp.lat.is_none());
+        assert!(resp.lon.is_none());
+        assert!(resp.node_desc.is_none());
+    }
+
+    #[test]
+    fn test_parse_advert_response_with_latlon() {
+        let mut data = build_advert_response_payload();
+        data.extend_from_slice(&37774900i32.to_le_bytes()); // lat
+        data.extend_from_slice(&(-122419400i32).to_le_bytes()); // lon
+        assert_eq!(data.len(), ADVERT_RESP_LATLON_MIN_LEN);
+
+        let resp = parse_advert_response(&data).unwrap();
+        assert_eq!(resp.lat, Some(37774900));
+        assert_eq!(resp.lon, Some(-122419400));
+        assert!(resp.node_desc.is_none());
+    }
+
+    #[test]
+    fn test_parse_advert_response_with_latlon_and_desc() {
+        let mut data = build_advert_response_payload();
+        data.extend_from_slice(&37774900i32.to_le_bytes()); // lat
+        data.extend_from_slice(&(-122419400i32).to_le_bytes()); // lon
+        let mut desc = [0u8; 32];
+        desc[..6].copy_from_slice(b"Relay1");
+        data.extend_from_slice(&desc); // node_desc
+
+        let resp = parse_advert_response(&data).unwrap();
+        assert_eq!(resp.lat, Some(37774900));
+        assert_eq!(resp.lon, Some(-122419400));
+        assert_eq!(resp.node_desc.as_deref(), Some("Relay1"));
+    }
+
+    #[test]
+    fn test_parse_advert_response_partial_latlon_ignored() {
+        // Payload extends past flags but not enough for both lat and lon
+        let mut data = build_advert_response_payload();
+        data.extend_from_slice(&[0xFF; 4]); // only 4 extra bytes, need 8
+
+        let resp = parse_advert_response(&data).unwrap();
+        // Not enough for lat+lon, so they remain None
+        assert!(resp.lat.is_none());
+        assert!(resp.lon.is_none());
+    }
+
+    #[test]
+    fn test_parse_advert_response_latlon_exact_no_desc() {
+        // Exactly at LATLON_MIN_LEN: lat+lon present but no description
+        let mut data = build_advert_response_payload();
+        data.extend_from_slice(&0i32.to_le_bytes()); // lat = 0
+        data.extend_from_slice(&0i32.to_le_bytes()); // lon = 0
+
+        let resp = parse_advert_response(&data).unwrap();
+        assert_eq!(resp.lat, Some(0));
+        assert_eq!(resp.lon, Some(0));
+        assert!(resp.node_desc.is_none());
+    }
+
+    #[test]
+    fn test_parse_advert_response_offset_constants() {
+        // Verify the computed constants match the documented byte layout
+        assert_eq!(ADVERT_RESP_TAG_OFFSET, 0);
+        assert_eq!(ADVERT_RESP_PUBKEY_OFFSET, 4);
+        assert_eq!(ADVERT_RESP_ADV_TYPE_OFFSET, 36);
+        assert_eq!(ADVERT_RESP_NODE_NAME_OFFSET, 37);
+        assert_eq!(ADVERT_RESP_TIMESTAMP_OFFSET, 69);
+        assert_eq!(ADVERT_RESP_FLAGS_OFFSET, 73);
+        assert_eq!(ADVERT_RESP_MIN_LEN, 74);
+        assert_eq!(ADVERT_RESP_LAT_OFFSET, 74);
+        assert_eq!(ADVERT_RESP_LON_OFFSET, 78);
+        assert_eq!(ADVERT_RESP_LATLON_MIN_LEN, 82);
+        assert_eq!(ADVERT_RESP_NODE_DESC_OFFSET, 82);
     }
 }
