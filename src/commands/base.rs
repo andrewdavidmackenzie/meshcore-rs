@@ -65,6 +65,8 @@ const CMD_FACTORY_RESET: u8 = 51;
 const CMD_PATH_DISCOVERY: u8 = 52;
 const CMD_SET_FLOOD_SCOPE: u8 = 54;
 const CMD_SEND_CONTROL_DATA: u8 = 55;
+const CMD_SET_AUTOADD_CONFIG: u8 = 58;
+const CMD_GET_AUTOADD_CONFIG: u8 = 59;
 
 /// Destination type for commands
 #[derive(Debug, Clone)]
@@ -485,6 +487,60 @@ impl CommandHandler {
         // name_bytes[name_len..] is already zero (null terminator guaranteed)
         data.extend_from_slice(&name_bytes);
         data.extend_from_slice(secret);
+        self.send(&data, Some(EventType::Ok)).await?;
+        Ok(())
+    }
+
+    /// Get auto-add-contacts configuration: a bitmask of contact types
+    /// eligible for automatic addition from overheard adverts (see
+    /// [`crate::AUTO_ADD_CHAT`], [`crate::AUTO_ADD_REPEATER`],
+    /// [`crate::AUTO_ADD_ROOM_SERVER`], [`crate::AUTO_ADD_SENSOR`], plus
+    /// [`crate::AUTO_ADD_OVERWRITE_OLDEST`], which isn't a contact type but
+    /// controls table-full behavior); 0 means disabled for every type.
+    ///
+    /// Format: [CMD_GET_AUTOADD_CONFIG=59]
+    pub async fn get_autoadd_config(&self) -> Result<u8> {
+        let data = [CMD_GET_AUTOADD_CONFIG];
+        let event = self.send(&data, Some(EventType::AutoAddConfig)).await?;
+
+        match event.payload {
+            EventPayload::AutoAddConfig { flags } => Ok(flags),
+            _ => Err(Error::protocol(
+                "Unexpected response to auto-add config query",
+            )),
+        }
+    }
+
+    /// Set auto-add-contacts configuration. `config` is built by OR-ing
+    /// together the `AUTO_ADD_*` bit constants (e.g.
+    /// `AUTO_ADD_REPEATER | AUTO_ADD_ROOM_SERVER`); `0` disables auto-add
+    /// for every contact type. `max_hops`, if given, caps the hop count
+    /// eligible for auto-adding; omitted, the firmware leaves its current
+    /// value untouched.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use meshcore_rs::{AUTO_ADD_REPEATER, AUTO_ADD_ROOM_SERVER};
+    /// # async fn example(handler: meshcore_rs::commands::CommandHandler) -> meshcore_rs::Result<()> {
+    /// // Only auto-add repeaters and room servers, capped at 3 hops.
+    /// handler
+    ///     .set_autoadd_config(AUTO_ADD_REPEATER | AUTO_ADD_ROOM_SERVER, Some(3))
+    ///     .await?;
+    ///
+    /// // Disable auto-add entirely.
+    /// handler.set_autoadd_config(0, None).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Format: [CMD_SET_AUTOADD_CONFIG=58][config: u8]
+    /// Format: [CMD_SET_AUTOADD_CONFIG=58][config: u8][max_hops: u8]
+    pub async fn set_autoadd_config(&self, config: u8, max_hops: Option<u8>) -> Result<()> {
+        let mut data = vec![CMD_SET_AUTOADD_CONFIG, config];
+        if let Some(max_hops) = max_hops {
+            data.push(max_hops);
+        }
         self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
     }
@@ -1137,6 +1193,9 @@ impl CommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        AUTO_ADD_CHAT, AUTO_ADD_OVERWRITE_OLDEST, AUTO_ADD_REPEATER, AUTO_ADD_ROOM_SERVER,
+    };
 
     // ========== Destination Tests ==========
 
@@ -1978,6 +2037,69 @@ mod tests {
         // Name longer than CHANNEL_NAME_LEN - 1 should be truncated to ensure null termination
         let long_name = "This is a very long channel name that exceeds the limit";
         let result = handler.set_channel(2, long_name, &secret).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_autoadd_config_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_GET_AUTOADD_CONFIG]);
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::AutoAddConfig,
+                    EventPayload::AutoAddConfig {
+                        flags: AUTO_ADD_OVERWRITE_OLDEST | AUTO_ADD_CHAT,
+                    },
+                ))
+                .await;
+        });
+
+        let result = handler.get_autoadd_config().await;
+        assert_eq!(result.unwrap(), AUTO_ADD_OVERWRITE_OLDEST | AUTO_ADD_CHAT);
+    }
+
+    #[tokio::test]
+    async fn test_set_autoadd_config_without_max_hops_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            // No max_hops byte -- exactly [CMD, config].
+            assert_eq!(sent, vec![CMD_SET_AUTOADD_CONFIG, 0]);
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
+                .await;
+        });
+
+        let result = handler.set_autoadd_config(0, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_autoadd_config_with_max_hops_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        let config =
+            AUTO_ADD_OVERWRITE_OLDEST | AUTO_ADD_CHAT | AUTO_ADD_REPEATER | AUTO_ADD_ROOM_SERVER;
+
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_SET_AUTOADD_CONFIG, config, 5]);
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
+                .await;
+        });
+
+        let result = handler.set_autoadd_config(config, Some(5)).await;
         assert!(result.is_ok());
     }
 
