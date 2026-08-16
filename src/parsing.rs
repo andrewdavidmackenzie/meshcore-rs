@@ -1119,6 +1119,24 @@ pub fn parse_discover_response(payload: &[u8]) -> Vec<DiscoverEntry> {
     entries
 }
 
+// --- ContactEnd payload layout ---
+
+/// Minimum length for a ContactEnd payload to contain a
+/// `last_modification_timestamp`.
+const CONTACT_END_TIMESTAMP_LEN: usize = 4;
+
+/// Parse the optional `last_modification_timestamp` from a
+/// `PacketType::ContactEnd` payload.
+///
+/// Returns `0` if the payload is too short to contain the timestamp.
+pub fn parse_contact_end_timestamp(payload: &[u8]) -> u32 {
+    if payload.len() >= CONTACT_END_TIMESTAMP_LEN {
+        read_u32_le(payload, 0).unwrap_or(0)
+    } else {
+        0
+    }
+}
+
 // --- StatusResponse payload layout ---
 
 /// Length of the sender prefix in a StatusResponse payload.
@@ -2533,5 +2551,30 @@ mod tests {
         assert_eq!(BINARY_RESP_TAG_OFFSET, 1);
         assert_eq!(BINARY_RESP_DATA_OFFSET, 5);
         assert_eq!(BINARY_RESP_MIN_LEN, 5);
+    }
+
+    // ========== parse_contact_end_timestamp tests ==========
+
+    #[test]
+    fn test_parse_contact_end_timestamp_empty() {
+        assert_eq!(parse_contact_end_timestamp(&[]), 0);
+    }
+
+    #[test]
+    fn test_parse_contact_end_timestamp_too_short() {
+        assert_eq!(parse_contact_end_timestamp(&[0x01, 0x02, 0x03]), 0);
+    }
+
+    #[test]
+    fn test_parse_contact_end_timestamp_valid() {
+        let data = 1700000000u32.to_le_bytes();
+        assert_eq!(parse_contact_end_timestamp(&data), 1700000000);
+    }
+
+    #[test]
+    fn test_parse_contact_end_timestamp_with_extra_bytes() {
+        let mut data = 42u32.to_le_bytes().to_vec();
+        data.extend_from_slice(&[0xFF, 0xFF]); // extra trailing bytes
+        assert_eq!(parse_contact_end_timestamp(&data), 42);
     }
 }
