@@ -105,15 +105,19 @@ fn parse_log_data(payload: &[u8]) -> Result<LogData> {
 
     let packet = payload.get(SNR_RSSI_LEN..).unwrap_or(&[]);
 
-    let (header, inner_payload) = match parse_mesh_packet_header(packet) {
-        Ok((header, remaining)) => (Some(header), remaining),
-        Err(_) => (None, packet),
+    let (header, inner_payload) = if packet.is_empty() {
+        (None, packet)
+    } else {
+        let (header, remaining) = parse_mesh_packet_header(packet)?;
+        (Some(header), remaining)
     };
 
-    let advertisement = header
-        .as_ref()
-        .filter(|h| h.payload_type == PayloadType::Advert)
-        .and_then(|_| parse_raw_advertisement(inner_payload).ok());
+    let advertisement = match header.as_ref() {
+        Some(h) if h.payload_type == PayloadType::Advert => {
+            Some(parse_raw_advertisement(inner_payload)?)
+        }
+        _ => None,
+    };
 
     Ok(LogData {
         snr,
@@ -604,6 +608,18 @@ mod tests {
     fn test_parse_log_data_too_short() {
         assert!(parse_log_data(&[]).is_err());
         assert!(parse_log_data(&[40]).is_err());
+    }
+
+    #[test]
+    fn test_parse_log_data_snr_rssi_only() {
+        // Just SNR + RSSI, no packet bytes -- valid with no header
+        let payload = [40, (-70i8) as u8];
+        let log = parse_log_data(&payload).expect("should decode");
+        assert_eq!(log.snr, 10.0);
+        assert_eq!(log.rssi, -70);
+        assert!(log.header.is_none());
+        assert!(log.advertisement.is_none());
+        assert!(log.payload.is_empty());
     }
 
     #[test]

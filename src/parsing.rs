@@ -2647,4 +2647,60 @@ mod tests {
         data.extend_from_slice(&[0xFF, 0xFF]); // extra trailing bytes
         assert_eq!(parse_contact_end_timestamp(&data).unwrap(), Some(42));
     }
+
+    // ========== parse_current_time tests ==========
+
+    #[test]
+    fn test_parse_current_time_too_short() {
+        assert!(parse_current_time(&[]).is_err());
+        assert!(parse_current_time(&[0x01, 0x02, 0x03]).is_err());
+    }
+
+    #[test]
+    fn test_parse_current_time_valid() {
+        let data = 1700000000u32.to_le_bytes();
+        assert_eq!(parse_current_time(&data).unwrap(), 1700000000);
+    }
+
+    // ========== parse_private_key tests ==========
+
+    #[test]
+    fn test_parse_private_key_too_short() {
+        assert!(parse_private_key(&[]).is_err());
+        assert!(parse_private_key(&[0; 63]).is_err());
+    }
+
+    #[test]
+    fn test_parse_private_key_valid() {
+        let data = [0xAA; 64];
+        assert_eq!(parse_private_key(&data).unwrap(), [0xAA; 64]);
+    }
+
+    // ========== parse_sign_start tests ==========
+
+    #[test]
+    fn test_parse_sign_start_too_short() {
+        assert!(parse_sign_start(&[]).is_err());
+        assert!(parse_sign_start(&[0x01, 0x02, 0x03]).is_err());
+    }
+
+    #[test]
+    fn test_parse_sign_start_valid() {
+        let data = 4096u32.to_le_bytes();
+        assert_eq!(parse_sign_start(&data).unwrap(), 4096);
+    }
+
+    // ========== parse_ack tests ==========
+
+    #[test]
+    fn test_parse_ack_too_short() {
+        assert!(parse_ack(&[]).is_err());
+        assert!(parse_ack(&[0x01, 0x02, 0x03]).is_err());
+    }
+
+    #[test]
+    fn test_parse_ack_valid() {
+        let data = [0x11, 0x22, 0x33, 0x44];
+        assert_eq!(parse_ack(&data).unwrap(), [0x11, 0x22, 0x33, 0x44]);
+    }
 }
