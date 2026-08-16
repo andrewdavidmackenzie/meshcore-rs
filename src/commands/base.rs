@@ -61,6 +61,7 @@ const CMD_SIGN_FINISH: u8 = 35;
 const CMD_GET_CUSTOM_VARS: u8 = 40;
 const CMD_SET_CUSTOM_VAR: u8 = 41;
 const CMD_SEND_BINARY_REQ: u8 = 50;
+const CMD_FACTORY_RESET: u8 = 51;
 const CMD_PATH_DISCOVERY: u8 = 52;
 const CMD_SET_FLOOD_SCOPE: u8 = 54;
 
@@ -412,6 +413,18 @@ impl CommandHandler {
             .send(data.to_vec())
             .await
             .map_err(|e| Error::Channel(e.to_string()))
+    }
+
+    /// Factory reset the device, erasing all data.
+    ///
+    /// **WARNING**: This will erase all contacts, channels, keys and
+    /// settings on the device. The connection will be lost.
+    ///
+    /// Format: [CMD_FACTORY_RESET=0x33]
+    pub async fn factory_reset(&self) -> Result<()> {
+        let data = [CMD_FACTORY_RESET];
+        self.send(&data, Some(EventType::Ok)).await?;
+        Ok(())
     }
 
     /// Get custom variables
@@ -1329,6 +1342,7 @@ mod tests {
         assert_eq!(CMD_GET_CUSTOM_VARS, 40);
         assert_eq!(CMD_SET_CUSTOM_VAR, 41);
         assert_eq!(CMD_SEND_BINARY_REQ, 50);
+        assert_eq!(CMD_FACTORY_RESET, 51);
         assert_eq!(CMD_PATH_DISCOVERY, 52);
     }
 
@@ -1709,6 +1723,20 @@ mod tests {
         let sent = recv_task.await.unwrap().unwrap();
         assert_eq!(sent[0], CMD_REBOOT);
         assert_eq!(&sent[1..], b"reboot");
+    }
+
+    #[tokio::test]
+    async fn test_factory_reset() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        // Spawn a task to simulate an Ok response
+        tokio::spawn(async move {
+            let _sent = rx.recv().await.unwrap();
+            dispatcher.emit(MeshCoreEvent::ok()).await;
+        });
+
+        let result = handler.factory_reset().await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
