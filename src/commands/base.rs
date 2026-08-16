@@ -2064,6 +2064,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_autoadd_config_errors_on_mismatched_payload() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+
+            // Right EventType, wrong payload shape -- shouldn't happen via
+            // the real reader (type and payload are always constructed
+            // together), but exercises the defensive fallback arm.
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::AutoAddConfig,
+                    EventPayload::None,
+                ))
+                .await;
+        });
+
+        let result = handler.get_autoadd_config().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
     async fn test_set_autoadd_config_without_max_hops_wire_format() {
         let (handler, mut rx, dispatcher) = create_test_handler();
 
