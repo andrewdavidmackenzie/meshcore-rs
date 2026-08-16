@@ -593,10 +593,10 @@ mod tests {
         let mut key = [0u8; 32];
         key[0] = 0xAA;
         let contact = make_contact("Alice", key);
-        mc.contacts.write().await.insert(
-            crate::parsing::hex_encode(&contact.public_key),
-            contact,
-        );
+        mc.contacts
+            .write()
+            .await
+            .insert(crate::parsing::hex_encode(&contact.public_key), contact);
 
         let result = mc.get_contact_by_name("Alice").await;
         assert!(result.is_some());
@@ -609,10 +609,10 @@ mod tests {
         let mut key = [0u8; 32];
         key[0] = 0xBB;
         let contact = make_contact("Bob", key);
-        mc.contacts.write().await.insert(
-            crate::parsing::hex_encode(&contact.public_key),
-            contact,
-        );
+        mc.contacts
+            .write()
+            .await
+            .insert(crate::parsing::hex_encode(&contact.public_key), contact);
 
         let result = mc.get_contact_by_name("bob").await;
         assert!(result.is_some());
@@ -639,10 +639,10 @@ mod tests {
         key[1] = 0x02;
         key[2] = 0x03;
         let contact = make_contact("Charlie", key);
-        mc.contacts.write().await.insert(
-            crate::parsing::hex_encode(&contact.public_key),
-            contact,
-        );
+        mc.contacts
+            .write()
+            .await
+            .insert(crate::parsing::hex_encode(&contact.public_key), contact);
 
         let result = mc.get_contact_by_prefix(&[0x01, 0x02, 0x03]).await;
         assert!(result.is_some());
@@ -656,10 +656,10 @@ mod tests {
         key[0] = 0xDE;
         key[1] = 0xAD;
         let contact = make_contact("Dave", key);
-        mc.contacts.write().await.insert(
-            crate::parsing::hex_encode(&contact.public_key),
-            contact,
-        );
+        mc.contacts
+            .write()
+            .await
+            .insert(crate::parsing::hex_encode(&contact.public_key), contact);
 
         // Match with just the first byte
         let result = mc.get_contact_by_prefix(&[0xDE]).await;
@@ -679,10 +679,10 @@ mod tests {
         let mut key = [0u8; 32];
         key[0] = 0x01;
         let contact = make_contact("Eve", key);
-        mc.contacts.write().await.insert(
-            crate::parsing::hex_encode(&contact.public_key),
-            contact,
-        );
+        mc.contacts
+            .write()
+            .await
+            .insert(crate::parsing::hex_encode(&contact.public_key), contact);
 
         // Empty prefix matches everything
         let result = mc.get_contact_by_prefix(&[]).await;
@@ -713,29 +713,15 @@ mod tests {
             Duration::from_secs(1),
         );
 
-        // Disconnect in a separate task so we can await the event
-        let mc_clone_connected = mc.connected.clone();
-        let mc_dispatcher = mc.dispatcher.clone();
-        let mc_tasks = mc.tasks.clone();
-        tokio::spawn(async move {
-            // Small delay to ensure receiver is ready
+        // Run the real disconnect concurrently with the waiter
+        let (result, disconnect_result) = tokio::join!(event, async {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            *mc_clone_connected.write().await = false;
-            let mut tasks = mc_tasks.lock().await;
-            for task in tasks.drain(..) {
-                task.abort();
-            }
-            mc_dispatcher
-                .emit(MeshCoreEvent::new(
-                    EventType::Disconnected,
-                    EventPayload::None,
-                ))
-                .await;
+            mc.disconnect().await
         });
-
-        let result = event.await;
+        disconnect_result.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().event_type, EventType::Disconnected);
+        assert!(!mc.is_connected().await);
     }
 
     #[tokio::test]
@@ -797,10 +783,7 @@ mod tests {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
             dispatcher
-                .emit(MeshCoreEvent::new(
-                    EventType::Battery,
-                    EventPayload::None,
-                ))
+                .emit(MeshCoreEvent::new(EventType::Battery, EventPayload::None))
                 .await;
         });
 
@@ -864,10 +847,7 @@ mod tests {
                 .await;
             // Then a matching one
             dispatcher
-                .emit(MeshCoreEvent::new(
-                    EventType::Battery,
-                    EventPayload::None,
-                ))
+                .emit(MeshCoreEvent::new(EventType::Battery, EventPayload::None))
                 .await;
         });
 
@@ -1025,16 +1005,10 @@ mod tests {
         ) -> Poll<std::io::Result<usize>> {
             Poll::Ready(Ok(buf.len()))
         }
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<std::io::Result<()>> {
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
         }
-        fn poll_shutdown(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<std::io::Result<()>> {
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -1120,11 +1094,8 @@ mod tests {
         let dispatcher_clone = dispatcher.clone();
 
         // The reader should emit an Ok event, then disconnect on EOF
-        let ok_event = dispatcher.wait_for_event(
-            Some(EventType::Ok),
-            HashMap::new(),
-            Duration::from_secs(2),
-        );
+        let ok_event =
+            dispatcher.wait_for_event(Some(EventType::Ok), HashMap::new(), Duration::from_secs(2));
 
         tokio::spawn(async move {
             read_task(read_half, reader, connected_clone, dispatcher_clone).await;
@@ -1153,11 +1124,8 @@ mod tests {
         let connected_clone = connected.clone();
         let dispatcher_clone = dispatcher.clone();
 
-        let ok_event = dispatcher.wait_for_event(
-            Some(EventType::Ok),
-            HashMap::new(),
-            Duration::from_secs(2),
-        );
+        let ok_event =
+            dispatcher.wait_for_event(Some(EventType::Ok), HashMap::new(), Duration::from_secs(2));
 
         tokio::spawn(async move {
             read_task(read_half, reader, connected_clone, dispatcher_clone).await;
@@ -1181,7 +1149,7 @@ mod tests {
         data.push(0x01); // length low
         data.push(0x00); // length high
         data.push(0x00); // PacketType::Ok
-        // Frame 2: Error with message
+                         // Frame 2: Error with message
         let err_payload = vec![0x01, b'f', b'a', b'i', b'l']; // 0x01 = PacketType::Error
         data.push(FRAME_START);
         data.push(err_payload.len() as u8);
@@ -1234,11 +1202,8 @@ mod tests {
         let connected_clone = connected.clone();
         let dispatcher_clone = dispatcher.clone();
 
-        let ok_event = dispatcher.wait_for_event(
-            Some(EventType::Ok),
-            HashMap::new(),
-            Duration::from_secs(2),
-        );
+        let ok_event =
+            dispatcher.wait_for_event(Some(EventType::Ok), HashMap::new(), Duration::from_secs(2));
 
         tokio::spawn(async move {
             read_task(read_half, reader, connected_clone, dispatcher_clone).await;
