@@ -2509,4 +2509,105 @@ mod tests {
         let event = MessageReader::dispatch_control_data(&data).unwrap();
         assert_eq!(event.event_type, EventType::ControlData);
     }
+
+    #[test]
+    fn test_dispatch_binary_response_status_ok() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        // Build valid status data (52 bytes minimum)
+        let data = vec![0u8; 52];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Status,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::StatusResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_status_parse_fail() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        // Too-short data for parse_status
+        let data = vec![0x01];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Status,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        // Falls back to generic BinaryResponse
+        assert_eq!(event.event_type, EventType::BinaryResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_mma() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        let data = vec![];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Mma,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::MmaResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_acl() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        let data = vec![];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Acl,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::AclResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_neighbours_ok() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        // Build valid neighbours data: count(1) + at least one entry
+        let mut data = vec![1u8]; // count = 1
+        data.extend_from_slice(&[0xAA; 4]); // pubkey prefix (4 bytes)
+        data.push(40); // snr
+        data.push((-70i8) as u8); // rssi
+        data.extend_from_slice(&1000u32.to_le_bytes()); // last_seen
+        let mut context = HashMap::new();
+        context.insert("pubkey_prefix_length".to_string(), "4".to_string());
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Neighbours,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context,
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::NeighboursResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_neighbours_parse_fail() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        let data = vec![]; // too short for neighbours
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Neighbours,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        // Falls back to generic BinaryResponse
+        assert_eq!(event.event_type, EventType::BinaryResponse);
+    }
 }

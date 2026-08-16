@@ -933,7 +933,7 @@ pub fn parse_msg_sent(payload: &[u8]) -> Option<MsgSentInfo> {
         return None;
     }
 
-    let message_type = payload[0];
+    let message_type = payload[0]; // jonesy:allow(bounds) -- checked >= MSG_SENT_MIN_LEN above
     let expected_ack: [u8; 4] = read_bytes(payload, MSG_SENT_ACK_OFFSET).ok()?;
     let suggested_timeout = read_u32_le(payload, MSG_SENT_TIMEOUT_OFFSET).unwrap_or(5000);
 
@@ -958,7 +958,7 @@ pub fn parse_channel_info(payload: &[u8]) -> Option<ChannelInfoData> {
         return None;
     }
 
-    let channel_idx = payload[0];
+    let channel_idx = payload[0]; // jonesy:allow(bounds) -- checked >= min_len above
     let name = read_string(payload, 1, CHANNEL_NAME_LEN);
     let secret: [u8; CHANNEL_SECRET_LEN] =
         read_bytes(payload, 1 + CHANNEL_NAME_LEN).unwrap_or([0; CHANNEL_SECRET_LEN]);
@@ -982,6 +982,7 @@ pub fn parse_stats(payload: &[u8]) -> Option<StatsData> {
     }
 
     let category = match payload[0] {
+        // jonesy:allow(bounds) -- checked !is_empty() above
         0 => StatsCategory::Core,
         1 => StatsCategory::Radio,
         2 => StatsCategory::Packets,
@@ -1054,7 +1055,7 @@ pub fn parse_path_update(payload: &[u8]) -> Option<PathUpdateData> {
     }
 
     let prefix: [u8; 6] = read_bytes(payload, 0).ok()?;
-    let path_len = payload[PATH_UPDATE_PATH_LEN_OFFSET] as i8;
+    let path_len = payload[PATH_UPDATE_PATH_LEN_OFFSET] as i8; // jonesy:allow(bounds) -- checked >= PATH_UPDATE_MIN_LEN above
     let path = if payload.len() > PATH_UPDATE_PATH_OFFSET {
         payload[PATH_UPDATE_PATH_OFFSET..].to_vec()
     } else {
@@ -1082,11 +1083,12 @@ pub fn parse_trace_data(payload: &[u8]) -> TraceInfo {
     let mut hops = Vec::new();
     let mut offset = 0;
     while offset + TRACE_HOP_LEN <= payload.len() {
+        // jonesy:allow(overflow)
         let prefix: [u8; 6] = read_bytes(payload, offset).unwrap_or([0; 6]);
-        let snr_raw = payload[offset + TRACE_HOP_SNR_OFFSET] as i8;
+        let snr_raw = payload[offset + TRACE_HOP_SNR_OFFSET] as i8; // jonesy:allow(bounds, overflow) -- loop guard ensures offset + 7 <= len
         let snr = snr_raw as f32 / 4.0;
         hops.push(TraceHop { prefix, snr });
-        offset += TRACE_HOP_LEN;
+        offset += TRACE_HOP_LEN; // jonesy:allow(overflow) -- bounded by payload.len()
     }
     TraceInfo { hops }
 }
@@ -1111,10 +1113,11 @@ pub fn parse_discover_response(payload: &[u8]) -> Vec<DiscoverEntry> {
     let mut entries = Vec::new();
     let mut offset = 0;
     while offset + DISCOVER_ENTRY_MIN_LEN <= payload.len() {
-        let pubkey = payload[offset..offset + DISCOVER_NAME_OFFSET].to_vec();
-        let name = read_string(payload, offset + DISCOVER_NAME_OFFSET, DISCOVER_NAME_LEN);
+        // jonesy:allow(overflow)
+        let pubkey = payload[offset..offset + DISCOVER_NAME_OFFSET].to_vec(); // jonesy:allow(overflow)
+        let name = read_string(payload, offset + DISCOVER_NAME_OFFSET, DISCOVER_NAME_LEN); // jonesy:allow(overflow)
         entries.push(DiscoverEntry { pubkey, name });
-        offset += DISCOVER_ENTRY_LEN;
+        offset += DISCOVER_ENTRY_LEN; // jonesy:allow(overflow) -- bounded by payload.len()
     }
     entries
 }
