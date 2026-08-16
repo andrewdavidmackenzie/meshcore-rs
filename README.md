@@ -201,6 +201,32 @@ traffic never triggers it; use `LogData` for general monitoring as above.
 - `sign_start()` / `sign_data()` / `sign_finish()` - Low-level signing
 - `sign()` - High-level sign helper
 
+## Not Yet Supported Commands
+
+The companion firmware (`meshcore-dev/MeshCore`, `examples/companion_radio/MyMesh.cpp`) exposes
+more `CMD_*` commands than this crate currently wraps. The table below lists every command with
+no equivalent here yet, with the minimum firmware version that introduced it
+
+| Code | Name | Description | Minimum firmware version |
+|---|---|---|---|
+| 36 (0x24) | `SEND_TRACE_PATH` | Trace/test the route to a node | companion-v1.4.0 |
+| 37 (0x25) | `SET_DEVICE_PIN` | Set a device PIN (BLE pairing) | companion-v1.4.0 |
+| 38 (0x26) | `SET_OTHER_PARAMS` | Legacy `manual_add_contacts` flag, telemetry mode, advert location policy, multi-acks | companion-v1.5.0 |
+| 39 (0x27) | `SEND_TELEMETRY_REQ` | Request telemetry from a contact — **deprecated in firmware** in favor of `SEND_BINARY_REQ` (already supported, see `req_telemetry()`) | companion-v1.6.0 |
+| 42 (0x2A) | `GET_ADVERT_PATH` | Last known route recorded for a contact's public key | companion-v1.7.1 |
+| 43 (0x2B) | `GET_TUNING_PARAMS` | Read radio tuning params (rx delay base, airtime factor) — the `SET` side is already supported | companion-v1.7.3 |
+| 51 (0x33) | `FACTORY_RESET` | Factory reset (requires the literal `"reset"` confirmation payload) | companion-v1.7.3 |
+| 52 (0x34) | `SEND_PATH_DISCOVERY_REQ` | Actively discover the route to a contact | companion-v1.8.0 |
+| 55 (0x37) | `SEND_CONTROL_DATA` | Send a zero-hop "control" datagram to a peer | companion-v1.10.0 |
+| 56 (0x38) | `GET_STATS` | Core/radio/packet statistics (sub-type in byte 2) | companion-v1.11.0  |
+| 57 (0x39) | `SEND_ANON_REQ` | Request to a peer that isn't (yet) a known contact | companion-v1.12.0  |
+| 60 (0x3C) | `GET_ALLOWED_REPEAT_FREQ` | Frequency ranges a repeater is allowed to retransmit on | companion-v1.13.0 |
+| 61 (0x3D) | `SET_PATH_HASH_MODE` | Path-hash size mode used when building routes | companion-v1.14.0 |
+| 62 (0x3E) | `SEND_CHANNEL_DATA` | Send a raw datagram on a group/channel | companion-v1.15.0 |
+| 63 (0x3F) | `SET_DEFAULT_FLOOD_SCOPE` | Default flood-scope (region) applied when none is given | companion-v1.15.0 |
+| 64 (0x40) | `GET_DEFAULT_FLOOD_SCOPE` | Read the currently configured default flood-scope | companion-v1.15.0 |
+| 65 (0x41) | `SEND_RAW_PACKET` | Inject a raw, fully-formed mesh packet directly onto the radio | companion-v1.16.0 |
+
 ## Protocol Details
 
 The library implements the MeshCore serial/TCP protocol:
