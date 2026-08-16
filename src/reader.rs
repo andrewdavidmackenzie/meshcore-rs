@@ -546,11 +546,15 @@ impl MessageReader {
                 self.dispatcher.emit(event).await;
             }
 
-            PacketType::BinaryReq => {}
-            PacketType::FactoryReset => {}
-            PacketType::PathDiscovery => {}
-            PacketType::SetFloodScope => {}
-            PacketType::SendControlData => {}
+            // Command codes (app -> radio direction only). The radio responds
+            // with different packet types (Ok, BinaryResponse, etc.), never
+            // by echoing these codes back. They exist in PacketType because
+            // the same byte values serve as command identifiers on the wire.
+            PacketType::BinaryReq
+            | PacketType::FactoryReset
+            | PacketType::PathDiscovery
+            | PacketType::SetFloodScope
+            | PacketType::SendControlData => {}
 
             PacketType::RawData => {
                 let raw_data = parse_raw_data(payload)?;
@@ -564,6 +568,7 @@ impl MessageReader {
                 self.dispatcher.emit(event).await;
             }
 
+            // TODO: parse path discovery response (#74)
             PacketType::PathDiscoveryResponse => {}
             _ => {
                 tracing::debug!("Unknown packet type: {:?}", packet_type);
