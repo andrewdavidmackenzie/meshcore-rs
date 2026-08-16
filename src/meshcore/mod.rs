@@ -430,6 +430,35 @@ pub async fn read_task<R>(
 #[cfg(any(feature = "serial", feature = "tcp"))]
 mod tests {
     use super::*;
+    use crate::events::Contact;
+    use futures::StreamExt;
+    use std::io::Cursor;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    // ========== Helper ==========
+
+    fn create_test_meshcore() -> MeshCore {
+        let (sender, _receiver) = mpsc::channel(16);
+        MeshCore::new_with_sender(sender)
+    }
+
+    fn make_contact(name: &str, public_key: [u8; 32]) -> Contact {
+        Contact {
+            public_key,
+            contact_type: 1,
+            flags: 0,
+            path_len: -1,
+            out_path: vec![],
+            adv_name: name.to_string(),
+            last_advert: 0,
+            adv_lat: 0,
+            adv_lon: 0,
+            last_modification_timestamp: 0,
+        }
+    }
+
+    // ========== frame_packet tests ==========
 
     #[test]
     fn test_frame_packet() {
@@ -499,5 +528,755 @@ mod tests {
     fn test_frame_start_resp_constant() {
         assert_eq!(FRAME_START_RESP, 0x3e);
         assert_eq!(FRAME_START_RESP, b'>');
+    }
+
+    // ========== Accessor / initial-state tests ==========
+
+    #[tokio::test]
+    async fn test_is_connected_initial() {
+        let mc = create_test_meshcore();
+        assert!(!mc.is_connected().await);
+    }
+
+    #[tokio::test]
+    async fn test_contacts_initial_empty() {
+        let mc = create_test_meshcore();
+        assert!(mc.contacts().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_self_info_initial_none() {
+        let mc = create_test_meshcore();
+        assert!(mc.self_info().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_device_time_initial_none() {
+        let mc = create_test_meshcore();
+        assert!(mc.device_time().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_contacts_dirty_initial_true() {
+        let mc = create_test_meshcore();
+        assert!(mc.contacts_dirty().await);
+    }
+
+    #[tokio::test]
+    async fn test_commands_returns_arc() {
+        let mc = create_test_meshcore();
+        // Just verify we can lock the commands
+        let _guard = mc.commands().lock().await;
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_returns_arc() {
+        let mc = create_test_meshcore();
+        let dispatcher = mc.dispatcher();
+        // Verify we can emit an event through it
+        dispatcher
+            .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_reader_returns_arc() {
+        let mc = create_test_meshcore();
+        let _reader = mc.reader();
+    }
+
+    // ========== get_contact_by_name tests ==========
+
+    #[tokio::test]
+    async fn test_get_contact_by_name_found() {
+        let mc = create_test_meshcore();
+        let mut key = [0u8; 32];
+        key[0] = 0xAA;
+        let contact = make_contact("Alice", key);
+        mc.contacts.write().await.insert(
+            crate::parsing::hex_encode(&contact.public_key),
+            contact,
+        );
+
+        let result = mc.get_contact_by_name("Alice").await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().adv_name, "Alice");
+    }
+
+    #[tokio::test]
+    async fn test_get_contact_by_name_case_insensitive() {
+        let mc = create_test_meshcore();
+        let mut key = [0u8; 32];
+        key[0] = 0xBB;
+        let contact = make_contact("Bob", key);
+        mc.contacts.write().await.insert(
+            crate::parsing::hex_encode(&contact.public_key),
+            contact,
+        );
+
+        let result = mc.get_contact_by_name("bob").await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().adv_name, "Bob");
+
+        let result = mc.get_contact_by_name("BOB").await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_contact_by_name_not_found() {
+        let mc = create_test_meshcore();
+        let result = mc.get_contact_by_name("Nobody").await;
+        assert!(result.is_none());
+    }
+
+    // ========== get_contact_by_prefix tests ==========
+
+    #[tokio::test]
+    async fn test_get_contact_by_prefix_found() {
+        let mc = create_test_meshcore();
+        let mut key = [0u8; 32];
+        key[0] = 0x01;
+        key[1] = 0x02;
+        key[2] = 0x03;
+        let contact = make_contact("Charlie", key);
+        mc.contacts.write().await.insert(
+            crate::parsing::hex_encode(&contact.public_key),
+            contact,
+        );
+
+        let result = mc.get_contact_by_prefix(&[0x01, 0x02, 0x03]).await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().adv_name, "Charlie");
+    }
+
+    #[tokio::test]
+    async fn test_get_contact_by_prefix_partial_match() {
+        let mc = create_test_meshcore();
+        let mut key = [0u8; 32];
+        key[0] = 0xDE;
+        key[1] = 0xAD;
+        let contact = make_contact("Dave", key);
+        mc.contacts.write().await.insert(
+            crate::parsing::hex_encode(&contact.public_key),
+            contact,
+        );
+
+        // Match with just the first byte
+        let result = mc.get_contact_by_prefix(&[0xDE]).await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_contact_by_prefix_not_found() {
+        let mc = create_test_meshcore();
+        let result = mc.get_contact_by_prefix(&[0xFF, 0xFF]).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_contact_by_prefix_empty() {
+        let mc = create_test_meshcore();
+        let mut key = [0u8; 32];
+        key[0] = 0x01;
+        let contact = make_contact("Eve", key);
+        mc.contacts.write().await.insert(
+            crate::parsing::hex_encode(&contact.public_key),
+            contact,
+        );
+
+        // Empty prefix matches everything
+        let result = mc.get_contact_by_prefix(&[]).await;
+        assert!(result.is_some());
+    }
+
+    // ========== disconnect tests ==========
+
+    #[tokio::test]
+    async fn test_disconnect_sets_connected_false() {
+        let mc = create_test_meshcore();
+        *mc.connected.write().await = true;
+        assert!(mc.is_connected().await);
+
+        mc.disconnect().await.unwrap();
+        assert!(!mc.is_connected().await);
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_emits_event() {
+        let mc = create_test_meshcore();
+        *mc.connected.write().await = true;
+
+        // Subscribe to Disconnected event before disconnecting
+        let event = mc.dispatcher.wait_for_event(
+            Some(EventType::Disconnected),
+            HashMap::new(),
+            Duration::from_secs(1),
+        );
+
+        // Disconnect in a separate task so we can await the event
+        let mc_clone_connected = mc.connected.clone();
+        let mc_dispatcher = mc.dispatcher.clone();
+        let mc_tasks = mc.tasks.clone();
+        tokio::spawn(async move {
+            // Small delay to ensure receiver is ready
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            *mc_clone_connected.write().await = false;
+            let mut tasks = mc_tasks.lock().await;
+            for task in tasks.drain(..) {
+                task.abort();
+            }
+            mc_dispatcher
+                .emit(MeshCoreEvent::new(
+                    EventType::Disconnected,
+                    EventPayload::None,
+                ))
+                .await;
+        });
+
+        let result = event.await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().event_type, EventType::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_aborts_tasks() {
+        let mc = create_test_meshcore();
+
+        // Add a long-running background task
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+        });
+        mc.tasks.lock().await.push(handle);
+
+        mc.disconnect().await.unwrap();
+
+        // Tasks vec should be drained
+        assert!(mc.tasks.lock().await.is_empty());
+    }
+
+    // ========== set_default_timeout test ==========
+
+    #[tokio::test]
+    async fn test_set_default_timeout() {
+        let mc = create_test_meshcore();
+        // Should not panic; the timeout is forwarded to the command handler
+        mc.set_default_timeout(Duration::from_secs(42)).await;
+    }
+
+    // ========== subscribe / wait_for_event tests ==========
+
+    #[tokio::test]
+    async fn test_subscribe_receives_events() {
+        let mc = create_test_meshcore();
+        let received = Arc::new(RwLock::new(false));
+        let received_clone = received.clone();
+
+        let _sub = mc
+            .subscribe(EventType::Ok, HashMap::new(), move |_event| {
+                let received = received_clone.clone();
+                tokio::spawn(async move {
+                    *received.write().await = true;
+                });
+            })
+            .await;
+
+        mc.dispatcher()
+            .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
+            .await;
+
+        // Give the spawned task a moment to run
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(*received.read().await);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_event_success() {
+        let mc = create_test_meshcore();
+        let dispatcher = mc.dispatcher().clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            dispatcher
+                .emit(MeshCoreEvent::new(
+                    EventType::Battery,
+                    EventPayload::None,
+                ))
+                .await;
+        });
+
+        let result = mc
+            .wait_for_event(
+                Some(EventType::Battery),
+                HashMap::new(),
+                Duration::from_secs(1),
+            )
+            .await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().event_type, EventType::Battery);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_event_timeout() {
+        let mc = create_test_meshcore();
+        let result = mc
+            .wait_for_event(
+                Some(EventType::Battery),
+                HashMap::new(),
+                Duration::from_millis(50),
+            )
+            .await;
+        assert!(result.is_none());
+    }
+
+    // ========== event_stream tests ==========
+
+    #[tokio::test]
+    async fn test_event_stream_receives_events() {
+        let mc = create_test_meshcore();
+        let mut stream = mc.event_stream();
+        let dispatcher = mc.dispatcher().clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            dispatcher
+                .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
+                .await;
+        });
+
+        let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("timed out")
+            .expect("stream ended");
+        assert_eq!(event.event_type, EventType::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_event_stream_filtered_only_matching() {
+        let mc = create_test_meshcore();
+        let mut stream = mc.event_stream_filtered(EventType::Battery);
+        let dispatcher = mc.dispatcher().clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            // Emit a non-matching event first
+            dispatcher
+                .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
+                .await;
+            // Then a matching one
+            dispatcher
+                .emit(MeshCoreEvent::new(
+                    EventType::Battery,
+                    EventPayload::None,
+                ))
+                .await;
+        });
+
+        // The filtered stream should skip the Ok event and give us Battery
+        let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("timed out")
+            .expect("stream ended");
+        assert_eq!(event.event_type, EventType::Battery);
+    }
+
+    // ========== start/stop auto message fetching tests ==========
+
+    #[tokio::test]
+    async fn test_start_stop_auto_message_fetching() {
+        let mc = create_test_meshcore();
+
+        // Initially no subscription
+        assert!(mc.auto_fetch_sub.lock().await.is_none());
+
+        // Start auto-fetching
+        mc.start_auto_message_fetching().await;
+        assert!(mc.auto_fetch_sub.lock().await.is_some());
+
+        // Stop auto-fetching
+        mc.stop_auto_message_fetching().await;
+        assert!(mc.auto_fetch_sub.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stop_auto_message_fetching_when_not_started() {
+        let mc = create_test_meshcore();
+        // Should not panic when there's no active subscription
+        mc.stop_auto_message_fetching().await;
+        assert!(mc.auto_fetch_sub.lock().await.is_none());
+    }
+
+    // ========== setup_event_handlers tests ==========
+
+    #[tokio::test]
+    async fn test_setup_event_handlers_contacts() {
+        let mc = create_test_meshcore();
+        mc.setup_event_handlers().await;
+
+        // Emit a Contacts event
+        let contact = make_contact("Handler Test", [0x11; 32]);
+        mc.dispatcher()
+            .emit(MeshCoreEvent::new(
+                EventType::Contacts,
+                EventPayload::Contacts(vec![contact]),
+            ))
+            .await;
+
+        // Give the spawned handler task time to run
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let contacts = mc.contacts().await;
+        assert_eq!(contacts.len(), 1);
+        assert!(!mc.contacts_dirty().await);
+    }
+
+    #[tokio::test]
+    async fn test_setup_event_handlers_self_info() {
+        let mc = create_test_meshcore();
+        mc.setup_event_handlers().await;
+
+        let info = crate::events::SelfInfo {
+            name: "TestDevice".to_string(),
+            ..Default::default()
+        };
+        mc.dispatcher()
+            .emit(MeshCoreEvent::new(
+                EventType::SelfInfo,
+                EventPayload::SelfInfo(info),
+            ))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let self_info = mc.self_info().await;
+        assert!(self_info.is_some());
+        assert_eq!(self_info.unwrap().name, "TestDevice");
+    }
+
+    #[tokio::test]
+    async fn test_setup_event_handlers_current_time() {
+        let mc = create_test_meshcore();
+        mc.setup_event_handlers().await;
+
+        mc.dispatcher()
+            .emit(MeshCoreEvent::new(
+                EventType::CurrentTime,
+                EventPayload::Time(1234567890),
+            ))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let time = mc.device_time().await;
+        assert_eq!(time, Some(1234567890));
+    }
+
+    #[tokio::test]
+    async fn test_setup_event_handlers_new_contact() {
+        let mc = create_test_meshcore();
+        mc.setup_event_handlers().await;
+
+        let contact = make_contact("NewPeer", [0x22; 32]);
+        mc.dispatcher()
+            .emit(MeshCoreEvent::new(
+                EventType::NewContact,
+                EventPayload::Contact(contact),
+            ))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let contacts = mc.contacts().await;
+        assert_eq!(contacts.len(), 1);
+        let key_hex = crate::parsing::hex_encode(&[0x22; 32]);
+        assert!(contacts.contains_key(&key_hex));
+    }
+
+    // ========== read_task tests ==========
+
+    /// A mock AsyncRead that wraps a Cursor and can be split via tokio::io::split
+    struct MockStream {
+        inner: Cursor<Vec<u8>>,
+    }
+
+    impl MockStream {
+        fn new(data: Vec<u8>) -> Self {
+            Self {
+                inner: Cursor::new(data),
+            }
+        }
+    }
+
+    impl tokio::io::AsyncRead for MockStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let inner = &mut self.inner;
+            Pin::new(inner).poll_read(cx, buf)
+        }
+    }
+
+    impl tokio::io::AsyncWrite for MockStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_task_eof_disconnects() {
+        let dispatcher = Arc::new(EventDispatcher::new());
+        let reader = Arc::new(MessageReader::new(dispatcher.clone()));
+        let connected = Arc::new(RwLock::new(true));
+
+        // Empty stream = immediate EOF
+        let stream = MockStream::new(vec![]);
+        let (read_half, _write_half) = tokio::io::split(stream);
+
+        let connected_clone = connected.clone();
+        let dispatcher_clone = dispatcher.clone();
+
+        // Set up a receiver to catch the disconnect event
+        let event = dispatcher.wait_for_event(
+            Some(EventType::Disconnected),
+            HashMap::new(),
+            Duration::from_secs(2),
+        );
+
+        tokio::spawn(async move {
+            read_task(read_half, reader, connected_clone, dispatcher_clone).await;
+        });
+
+        let result = event.await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().event_type, EventType::Disconnected);
+        assert!(!*connected.read().await);
+    }
+
+    #[tokio::test]
+    async fn test_read_task_skips_invalid_frame_start() {
+        let dispatcher = Arc::new(EventDispatcher::new());
+        let reader = Arc::new(MessageReader::new(dispatcher.clone()));
+        let connected = Arc::new(RwLock::new(true));
+
+        // Data: some garbage bytes followed by EOF
+        // The reader should skip non-frame-start bytes and eventually hit EOF
+        let data = vec![0x00, 0x01, 0x02];
+        let stream = MockStream::new(data);
+        let (read_half, _write_half) = tokio::io::split(stream);
+
+        let connected_clone = connected.clone();
+        let dispatcher_clone = dispatcher.clone();
+
+        let event = dispatcher.wait_for_event(
+            Some(EventType::Disconnected),
+            HashMap::new(),
+            Duration::from_secs(2),
+        );
+
+        tokio::spawn(async move {
+            read_task(read_half, reader, connected_clone, dispatcher_clone).await;
+        });
+
+        // Should still disconnect on EOF after skipping garbage
+        let result = event.await;
+        assert!(result.is_some());
+        assert!(!*connected.read().await);
+    }
+
+    #[tokio::test]
+    async fn test_read_task_processes_valid_frame() {
+        let dispatcher = Arc::new(EventDispatcher::new());
+        let reader = Arc::new(MessageReader::new(dispatcher.clone()));
+        let connected = Arc::new(RwLock::new(true));
+
+        // Build a valid frame: FRAME_START + length (2 bytes LE) + payload
+        // PacketType::Ok is 0x00
+        let payload = vec![0x00];
+        let mut data = vec![FRAME_START, payload.len() as u8, 0x00];
+        data.extend_from_slice(&payload);
+        // After this frame, EOF will follow
+
+        let stream = MockStream::new(data);
+        let (read_half, _write_half) = tokio::io::split(stream);
+
+        let connected_clone = connected.clone();
+        let dispatcher_clone = dispatcher.clone();
+
+        // The reader should emit an Ok event, then disconnect on EOF
+        let ok_event = dispatcher.wait_for_event(
+            Some(EventType::Ok),
+            HashMap::new(),
+            Duration::from_secs(2),
+        );
+
+        tokio::spawn(async move {
+            read_task(read_half, reader, connected_clone, dispatcher_clone).await;
+        });
+
+        let result = ok_event.await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().event_type, EventType::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_read_task_processes_resp_frame_start() {
+        let dispatcher = Arc::new(EventDispatcher::new());
+        let reader = Arc::new(MessageReader::new(dispatcher.clone()));
+        let connected = Arc::new(RwLock::new(true));
+
+        // Use FRAME_START_RESP (0x3e) instead of FRAME_START (0x3c)
+        // PacketType::Ok is 0x00
+        let payload = vec![0x00];
+        let mut data = vec![FRAME_START_RESP, payload.len() as u8, 0x00];
+        data.extend_from_slice(&payload);
+
+        let stream = MockStream::new(data);
+        let (read_half, _write_half) = tokio::io::split(stream);
+
+        let connected_clone = connected.clone();
+        let dispatcher_clone = dispatcher.clone();
+
+        let ok_event = dispatcher.wait_for_event(
+            Some(EventType::Ok),
+            HashMap::new(),
+            Duration::from_secs(2),
+        );
+
+        tokio::spawn(async move {
+            read_task(read_half, reader, connected_clone, dispatcher_clone).await;
+        });
+
+        let result = ok_event.await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().event_type, EventType::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_read_task_multiple_frames() {
+        let dispatcher = Arc::new(EventDispatcher::new());
+        let reader = Arc::new(MessageReader::new(dispatcher.clone()));
+        let connected = Arc::new(RwLock::new(true));
+
+        // Two consecutive frames: Ok (0x00) then Error (0x01) with message
+        let mut data = Vec::new();
+        // Frame 1: Ok
+        data.push(FRAME_START);
+        data.push(0x01); // length low
+        data.push(0x00); // length high
+        data.push(0x00); // PacketType::Ok
+        // Frame 2: Error with message
+        let err_payload = vec![0x01, b'f', b'a', b'i', b'l']; // 0x01 = PacketType::Error
+        data.push(FRAME_START);
+        data.push(err_payload.len() as u8);
+        data.push(0x00);
+        data.extend_from_slice(&err_payload);
+
+        let stream = MockStream::new(data);
+        let (read_half, _write_half) = tokio::io::split(stream);
+
+        let connected_clone = connected.clone();
+        let dispatcher_clone = dispatcher.clone();
+
+        // We should receive both events
+        let mut rx = dispatcher.receiver();
+
+        tokio::spawn(async move {
+            read_task(read_half, reader, connected_clone, dispatcher_clone).await;
+        });
+
+        // Collect events (Ok, Error, and Disconnected from EOF)
+        let mut event_types = Vec::new();
+        for _ in 0..3 {
+            match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+                Ok(Ok(event)) => event_types.push(event.event_type),
+                _ => break,
+            }
+        }
+
+        assert!(event_types.contains(&EventType::Ok));
+        assert!(event_types.contains(&EventType::Error));
+        assert!(event_types.contains(&EventType::Disconnected));
+    }
+
+    #[tokio::test]
+    async fn test_read_task_garbage_before_valid_frame() {
+        let dispatcher = Arc::new(EventDispatcher::new());
+        let reader = Arc::new(MessageReader::new(dispatcher.clone()));
+        let connected = Arc::new(RwLock::new(true));
+
+        // Some garbage bytes, then a valid frame
+        let mut data = vec![0xFF, 0xFE, 0xFD]; // garbage
+        data.push(FRAME_START);
+        data.push(0x01); // length
+        data.push(0x00);
+        data.push(0x00); // PacketType::Ok
+
+        let stream = MockStream::new(data);
+        let (read_half, _write_half) = tokio::io::split(stream);
+
+        let connected_clone = connected.clone();
+        let dispatcher_clone = dispatcher.clone();
+
+        let ok_event = dispatcher.wait_for_event(
+            Some(EventType::Ok),
+            HashMap::new(),
+            Duration::from_secs(2),
+        );
+
+        tokio::spawn(async move {
+            read_task(read_half, reader, connected_clone, dispatcher_clone).await;
+        });
+
+        let result = ok_event.await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().event_type, EventType::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_read_task_incomplete_frame_then_eof() {
+        let dispatcher = Arc::new(EventDispatcher::new());
+        let reader = Arc::new(MessageReader::new(dispatcher.clone()));
+        let connected = Arc::new(RwLock::new(true));
+
+        // Frame header says 10 bytes but we only provide 2
+        let data = vec![FRAME_START, 0x0A, 0x00, 0x01, 0x02];
+
+        let stream = MockStream::new(data);
+        let (read_half, _write_half) = tokio::io::split(stream);
+
+        let connected_clone = connected.clone();
+        let dispatcher_clone = dispatcher.clone();
+
+        let event = dispatcher.wait_for_event(
+            Some(EventType::Disconnected),
+            HashMap::new(),
+            Duration::from_secs(2),
+        );
+
+        tokio::spawn(async move {
+            read_task(read_half, reader, connected_clone, dispatcher_clone).await;
+        });
+
+        // Should disconnect because EOF before frame is complete
+        let result = event.await;
+        assert!(result.is_some());
+        assert!(!*connected.read().await);
     }
 }
