@@ -2,11 +2,13 @@
 
 use crate::error::Error;
 use crate::events::{
-    AclEntry, AdvertResponseData, ChannelMessage, Contact, ContactMessage, DeviceInfoData,
-    MeshPacketHeader, MmaEntry, Neighbour, NeighboursData, RawAdvertisement, SelfInfo, StatusData,
+    AclEntry, AdvertResponseData, AdvertisementData, BatteryInfo, ChannelInfoData, ChannelMessage,
+    Contact, ContactMessage, DeviceInfoData, DiscoverEntry, MeshPacketHeader, MmaEntry,
+    MsgSentInfo, Neighbour, NeighboursData, PathUpdateData, RawAdvertisement, SelfInfo,
+    StatsCategory, StatsData, StatusData, TraceHop, TraceInfo,
 };
 use crate::packets::{PayloadType, RouteType};
-use crate::Result;
+use crate::{Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
 
 /// Read a little-endian u16 from a byte slice
 pub fn read_u16_le(data: &[u8], offset: usize) -> Result<u16> {
@@ -878,6 +880,241 @@ pub fn parse_advert_response(payload: &[u8]) -> Option<AdvertResponseData> {
         lon,
         node_desc,
     })
+}
+
+// --- Battery payload layout ---
+
+/// Minimum length for a Battery payload (just the voltage field).
+const BATTERY_MIN_LEN: usize = 2;
+/// Minimum length to include optional storage fields (used_kb + total_kb).
+const BATTERY_STORAGE_MIN_LEN: usize = 10;
+const BATTERY_USED_KB_OFFSET: usize = 2;
+const BATTERY_TOTAL_KB_OFFSET: usize = 6;
+
+/// Parse a [`BatteryInfo`] from a `PacketType::Battery` payload.
+///
+/// Returns `None` if the payload is too short to contain the voltage field.
+pub fn parse_battery(payload: &[u8]) -> Option<BatteryInfo> {
+    if payload.len() < BATTERY_MIN_LEN {
+        return None;
+    }
+
+    let battery_mv = read_u16_le(payload, 0).ok()?;
+    let (used_kb, total_kb) = if payload.len() >= BATTERY_STORAGE_MIN_LEN {
+        (
+            Some(read_u32_le(payload, BATTERY_USED_KB_OFFSET).unwrap_or(0)),
+            Some(read_u32_le(payload, BATTERY_TOTAL_KB_OFFSET).unwrap_or(0)),
+        )
+    } else {
+        (None, None)
+    };
+
+    Some(BatteryInfo {
+        battery_mv,
+        used_kb,
+        total_kb,
+    })
+}
+
+// --- MsgSent payload layout ---
+
+/// Minimum length for a MsgSent payload.
+const MSG_SENT_MIN_LEN: usize = 9;
+const MSG_SENT_ACK_OFFSET: usize = 1;
+const MSG_SENT_TIMEOUT_OFFSET: usize = 5;
+
+/// Parse a [`MsgSentInfo`] from a `PacketType::MsgSent` payload.
+///
+/// Returns `None` if the payload is too short.
+pub fn parse_msg_sent(payload: &[u8]) -> Option<MsgSentInfo> {
+    if payload.len() < MSG_SENT_MIN_LEN {
+        return None;
+    }
+
+    let message_type = payload[0];
+    let expected_ack: [u8; 4] = read_bytes(payload, MSG_SENT_ACK_OFFSET).ok()?;
+    let suggested_timeout = read_u32_le(payload, MSG_SENT_TIMEOUT_OFFSET).unwrap_or(5000);
+
+    Some(MsgSentInfo {
+        message_type,
+        expected_ack,
+        suggested_timeout,
+    })
+}
+
+// --- ChannelInfo payload layout ---
+
+/// Parse a [`ChannelInfoData`] from a `PacketType::ChannelInfo` payload.
+///
+/// The firmware always sends `CHANNEL_INFO_LEN` bytes:
+/// 1 (idx) + CHANNEL_NAME_LEN (name) + CHANNEL_SECRET_LEN (secret).
+///
+/// Returns `None` if the payload is too short.
+pub fn parse_channel_info(payload: &[u8]) -> Option<ChannelInfoData> {
+    let min_len = 1 + CHANNEL_NAME_LEN + CHANNEL_SECRET_LEN;
+    if payload.len() < min_len {
+        return None;
+    }
+
+    let channel_idx = payload[0];
+    let name = read_string(payload, 1, CHANNEL_NAME_LEN);
+    let secret: [u8; CHANNEL_SECRET_LEN] =
+        read_bytes(payload, 1 + CHANNEL_NAME_LEN).unwrap_or([0; CHANNEL_SECRET_LEN]);
+
+    Some(ChannelInfoData {
+        channel_idx,
+        name,
+        secret,
+    })
+}
+
+// --- Stats payload layout ---
+
+/// Parse a [`StatsData`] (with its [`StatsCategory`]) from a
+/// `PacketType::Stats` payload.
+///
+/// Returns `None` if the payload is empty.
+pub fn parse_stats(payload: &[u8]) -> Option<StatsData> {
+    if payload.is_empty() {
+        return None;
+    }
+
+    let category = match payload[0] {
+        0 => StatsCategory::Core,
+        1 => StatsCategory::Radio,
+        2 => StatsCategory::Packets,
+        _ => StatsCategory::Core,
+    };
+
+    Some(StatsData {
+        category,
+        raw: payload[1..].to_vec(),
+    })
+}
+
+// --- Advertisement payload layout ---
+
+/// Length of the advertiser's 6-byte public key prefix.
+const ADVERT_PREFIX_LEN: usize = 6;
+/// Fixed width of the advertisement name field.
+const ADVERT_NAME_LEN: usize = 32;
+/// Minimum payload length (prefix + name header).
+const ADVERT_MIN_LEN: usize = ADVERT_PREFIX_LEN + 8; // prefix(6) + at least some name bytes
+const ADVERT_NAME_OFFSET: usize = ADVERT_PREFIX_LEN;
+/// Offset of the optional latitude field.
+const ADVERT_LAT_OFFSET: usize = ADVERT_NAME_OFFSET + ADVERT_NAME_LEN;
+/// Offset of the optional longitude field.
+const ADVERT_LON_OFFSET: usize = ADVERT_LAT_OFFSET + 4;
+
+/// Parse an [`AdvertisementData`] from a `PacketType::Advertisement` payload.
+///
+/// Returns `None` if the payload is too short to contain the prefix and
+/// at least part of the name.
+pub fn parse_advertisement(payload: &[u8]) -> Option<AdvertisementData> {
+    if payload.len() < ADVERT_MIN_LEN {
+        return None;
+    }
+
+    let prefix: [u8; 6] = read_bytes(payload, 0).ok()?;
+    let name = read_string(payload, ADVERT_NAME_OFFSET, ADVERT_NAME_LEN);
+    let lat = if payload.len() >= ADVERT_LAT_OFFSET + 4 {
+        read_i32_le(payload, ADVERT_LAT_OFFSET).unwrap_or(0)
+    } else {
+        0
+    };
+    let lon = if payload.len() >= ADVERT_LON_OFFSET + 4 {
+        read_i32_le(payload, ADVERT_LON_OFFSET).unwrap_or(0)
+    } else {
+        0
+    };
+
+    Some(AdvertisementData {
+        prefix,
+        name,
+        lat,
+        lon,
+    })
+}
+
+// --- PathUpdate payload layout ---
+
+/// Minimum length for a PathUpdate payload (prefix + path_len byte).
+const PATH_UPDATE_MIN_LEN: usize = 7;
+const PATH_UPDATE_PATH_LEN_OFFSET: usize = 6;
+const PATH_UPDATE_PATH_OFFSET: usize = 7;
+
+/// Parse a [`PathUpdateData`] from a `PacketType::PathUpdate` payload.
+///
+/// Returns `None` if the payload is too short.
+pub fn parse_path_update(payload: &[u8]) -> Option<PathUpdateData> {
+    if payload.len() < PATH_UPDATE_MIN_LEN {
+        return None;
+    }
+
+    let prefix: [u8; 6] = read_bytes(payload, 0).ok()?;
+    let path_len = payload[PATH_UPDATE_PATH_LEN_OFFSET] as i8;
+    let path = if payload.len() > PATH_UPDATE_PATH_OFFSET {
+        payload[PATH_UPDATE_PATH_OFFSET..].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    Some(PathUpdateData {
+        prefix,
+        path_len,
+        path,
+    })
+}
+
+// --- TraceData payload layout ---
+
+/// Size of each trace hop entry (6-byte prefix + 1-byte SNR).
+const TRACE_HOP_LEN: usize = 7;
+/// Offset of the SNR byte within a hop entry.
+const TRACE_HOP_SNR_OFFSET: usize = 6;
+
+/// Parse a [`TraceInfo`] from a `PacketType::TraceData` payload.
+///
+/// Returns a (possibly empty) list of trace hops.
+pub fn parse_trace_data(payload: &[u8]) -> TraceInfo {
+    let mut hops = Vec::new();
+    let mut offset = 0;
+    while offset + TRACE_HOP_LEN <= payload.len() {
+        let prefix: [u8; 6] = read_bytes(payload, offset).unwrap_or([0; 6]);
+        let snr_raw = payload[offset + TRACE_HOP_SNR_OFFSET] as i8;
+        let snr = snr_raw as f32 / 4.0;
+        hops.push(TraceHop { prefix, snr });
+        offset += TRACE_HOP_LEN;
+    }
+    TraceInfo { hops }
+}
+
+// --- ControlData / DiscoverResponse layout ---
+
+/// Size of one discover entry (32-byte pubkey + 32-byte name).
+const DISCOVER_ENTRY_LEN: usize = 64;
+/// Minimum readable portion of an entry (pubkey + at least some name).
+const DISCOVER_ENTRY_MIN_LEN: usize = 38;
+/// Offset of the name within an entry.
+const DISCOVER_NAME_OFFSET: usize = 32;
+/// Maximum name length in a discover entry.
+const DISCOVER_NAME_LEN: usize = 32;
+
+/// Parse a list of [`DiscoverEntry`] from a
+/// `ControlType::NodeDiscoverResp` payload.
+///
+/// The `payload` should start *after* the control-type byte (i.e. at the
+/// first entry).
+pub fn parse_discover_response(payload: &[u8]) -> Vec<DiscoverEntry> {
+    let mut entries = Vec::new();
+    let mut offset = 0;
+    while offset + DISCOVER_ENTRY_MIN_LEN <= payload.len() {
+        let pubkey = payload[offset..offset + DISCOVER_NAME_OFFSET].to_vec();
+        let name = read_string(payload, offset + DISCOVER_NAME_OFFSET, DISCOVER_NAME_LEN);
+        entries.push(DiscoverEntry { pubkey, name });
+        offset += DISCOVER_ENTRY_LEN;
+    }
+    entries
 }
 
 #[cfg(test)]
@@ -1779,5 +2016,283 @@ mod tests {
         assert_eq!(ADVERT_RESP_LON_OFFSET, 78);
         assert_eq!(ADVERT_RESP_LATLON_MIN_LEN, 82);
         assert_eq!(ADVERT_RESP_NODE_DESC_OFFSET, 82);
+    }
+
+    // ========== parse_battery tests ==========
+
+    #[test]
+    fn test_parse_battery_too_short() {
+        assert!(parse_battery(&[]).is_none());
+        assert!(parse_battery(&[0x01]).is_none());
+    }
+
+    #[test]
+    fn test_parse_battery_voltage_only() {
+        let data = 3700u16.to_le_bytes();
+        let info = parse_battery(&data).unwrap();
+        assert_eq!(info.battery_mv, 3700);
+        assert!(info.used_kb.is_none());
+        assert!(info.total_kb.is_none());
+    }
+
+    #[test]
+    fn test_parse_battery_with_storage() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&3800u16.to_le_bytes());
+        data.extend_from_slice(&1024u32.to_le_bytes()); // used_kb
+        data.extend_from_slice(&4096u32.to_le_bytes()); // total_kb
+        let info = parse_battery(&data).unwrap();
+        assert_eq!(info.battery_mv, 3800);
+        assert_eq!(info.used_kb, Some(1024));
+        assert_eq!(info.total_kb, Some(4096));
+    }
+
+    #[test]
+    fn test_parse_battery_partial_storage_ignored() {
+        // 2 bytes voltage + 4 bytes used_kb, but no total_kb (6 bytes < 10)
+        let mut data = Vec::new();
+        data.extend_from_slice(&3500u16.to_le_bytes());
+        data.extend_from_slice(&512u32.to_le_bytes());
+        let info = parse_battery(&data).unwrap();
+        assert_eq!(info.battery_mv, 3500);
+        assert!(info.used_kb.is_none());
+        assert!(info.total_kb.is_none());
+    }
+
+    // ========== parse_msg_sent tests ==========
+
+    #[test]
+    fn test_parse_msg_sent_too_short() {
+        assert!(parse_msg_sent(&[]).is_none());
+        assert!(parse_msg_sent(&[0; 8]).is_none());
+    }
+
+    #[test]
+    fn test_parse_msg_sent_valid() {
+        let mut data = vec![0x02]; // message_type
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]); // expected_ack
+        data.extend_from_slice(&10000u32.to_le_bytes()); // suggested_timeout
+        let info = parse_msg_sent(&data).unwrap();
+        assert_eq!(info.message_type, 0x02);
+        assert_eq!(info.expected_ack, [0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(info.suggested_timeout, 10000);
+    }
+
+    // ========== parse_channel_info tests ==========
+
+    #[test]
+    fn test_parse_channel_info_too_short() {
+        assert!(parse_channel_info(&[]).is_none());
+        assert!(parse_channel_info(&[0; 48]).is_none()); // need 49
+    }
+
+    #[test]
+    fn test_parse_channel_info_valid() {
+        let mut data = vec![3u8]; // channel_idx
+        let mut name = [0u8; CHANNEL_NAME_LEN];
+        name[..4].copy_from_slice(b"Test");
+        data.extend_from_slice(&name);
+        data.extend_from_slice(&[0xCC; CHANNEL_SECRET_LEN]);
+        let info = parse_channel_info(&data).unwrap();
+        assert_eq!(info.channel_idx, 3);
+        assert_eq!(info.name, "Test");
+        assert_eq!(info.secret, [0xCC; CHANNEL_SECRET_LEN]);
+    }
+
+    // ========== parse_stats tests ==========
+
+    #[test]
+    fn test_parse_stats_empty() {
+        assert!(parse_stats(&[]).is_none());
+    }
+
+    #[test]
+    fn test_parse_stats_core() {
+        let data = [0, 0x11, 0x22];
+        let stats = parse_stats(&data).unwrap();
+        assert_eq!(stats.category, StatsCategory::Core);
+        assert_eq!(stats.raw, vec![0x11, 0x22]);
+    }
+
+    #[test]
+    fn test_parse_stats_radio() {
+        let data = [1, 0xAA];
+        let stats = parse_stats(&data).unwrap();
+        assert_eq!(stats.category, StatsCategory::Radio);
+    }
+
+    #[test]
+    fn test_parse_stats_packets() {
+        let data = [2];
+        let stats = parse_stats(&data).unwrap();
+        assert_eq!(stats.category, StatsCategory::Packets);
+        assert!(stats.raw.is_empty());
+    }
+
+    #[test]
+    fn test_parse_stats_unknown_defaults_to_core() {
+        let data = [99, 0xFF];
+        let stats = parse_stats(&data).unwrap();
+        assert_eq!(stats.category, StatsCategory::Core);
+    }
+
+    // ========== parse_advertisement tests ==========
+
+    #[test]
+    fn test_parse_advertisement_too_short() {
+        assert!(parse_advertisement(&[]).is_none());
+        assert!(parse_advertisement(&[0; 13]).is_none());
+    }
+
+    #[test]
+    fn test_parse_advertisement_minimal() {
+        let mut data = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06]; // prefix
+        let mut name = [0u8; 32];
+        name[..4].copy_from_slice(b"Node");
+        data.extend_from_slice(&name);
+        // No lat/lon
+        let advert = parse_advertisement(&data).unwrap();
+        assert_eq!(advert.prefix, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        assert_eq!(advert.name, "Node");
+        assert_eq!(advert.lat, 0);
+        assert_eq!(advert.lon, 0);
+    }
+
+    #[test]
+    fn test_parse_advertisement_with_latlon() {
+        let mut data = vec![0xAA; 6]; // prefix
+        let mut name = [0u8; 32];
+        name[..5].copy_from_slice(b"Hello");
+        data.extend_from_slice(&name);
+        data.extend_from_slice(&37774900i32.to_le_bytes()); // lat
+        data.extend_from_slice(&(-122419400i32).to_le_bytes()); // lon
+        let advert = parse_advertisement(&data).unwrap();
+        assert_eq!(advert.name, "Hello");
+        assert_eq!(advert.lat, 37774900);
+        assert_eq!(advert.lon, -122419400);
+    }
+
+    // ========== parse_path_update tests ==========
+
+    #[test]
+    fn test_parse_path_update_too_short() {
+        assert!(parse_path_update(&[]).is_none());
+        assert!(parse_path_update(&[0; 6]).is_none());
+    }
+
+    #[test]
+    fn test_parse_path_update_no_path() {
+        let mut data = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66]; // prefix
+        data.push(0x03); // path_len = 3
+        let update = parse_path_update(&data).unwrap();
+        assert_eq!(update.prefix, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        assert_eq!(update.path_len, 3);
+        assert!(update.path.is_empty());
+    }
+
+    #[test]
+    fn test_parse_path_update_with_path() {
+        let mut data = vec![0xAA; 6]; // prefix
+        data.push(0x02); // path_len = 2
+        data.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let update = parse_path_update(&data).unwrap();
+        assert_eq!(update.path_len, 2);
+        assert_eq!(update.path, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn test_parse_path_update_negative_path_len() {
+        let mut data = vec![0xBB; 6]; // prefix
+        data.push(0xFF); // path_len as i8 = -1 (flood)
+        let update = parse_path_update(&data).unwrap();
+        assert_eq!(update.path_len, -1);
+    }
+
+    // ========== parse_trace_data tests ==========
+
+    #[test]
+    fn test_parse_trace_data_empty() {
+        let trace = parse_trace_data(&[]);
+        assert!(trace.hops.is_empty());
+    }
+
+    #[test]
+    fn test_parse_trace_data_single_hop() {
+        let mut data = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06]; // prefix
+        data.push(40); // snr_raw = 40, snr = 10.0
+        let trace = parse_trace_data(&data);
+        assert_eq!(trace.hops.len(), 1);
+        assert_eq!(trace.hops[0].prefix, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        assert_eq!(trace.hops[0].snr, 10.0);
+    }
+
+    #[test]
+    fn test_parse_trace_data_multiple_hops() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0xAA; 6]);
+        data.push(20); // snr = 5.0
+        data.extend_from_slice(&[0xBB; 6]);
+        data.push((-8i8) as u8); // snr = -2.0
+        let trace = parse_trace_data(&data);
+        assert_eq!(trace.hops.len(), 2);
+        assert_eq!(trace.hops[0].snr, 5.0);
+        assert_eq!(trace.hops[1].snr, -2.0);
+    }
+
+    #[test]
+    fn test_parse_trace_data_trailing_bytes_ignored() {
+        // 7 bytes for one hop + 3 trailing bytes (not enough for another hop)
+        let mut data = vec![0xCC; 6];
+        data.push(0);
+        data.extend_from_slice(&[0xFF, 0xFF, 0xFF]); // trailing
+        let trace = parse_trace_data(&data);
+        assert_eq!(trace.hops.len(), 1);
+    }
+
+    // ========== parse_discover_response tests ==========
+
+    #[test]
+    fn test_parse_discover_response_empty() {
+        let entries = parse_discover_response(&[]);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_discover_response_single_entry() {
+        let mut data = vec![0xAA; 32]; // pubkey
+        let mut name = [0u8; 32];
+        name[..5].copy_from_slice(b"Peer1");
+        data.extend_from_slice(&name);
+        let entries = parse_discover_response(&data);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].pubkey, vec![0xAA; 32]);
+        assert_eq!(entries[0].name, "Peer1");
+    }
+
+    #[test]
+    fn test_parse_discover_response_multiple_entries() {
+        let mut data = Vec::new();
+        // Entry 1
+        data.extend_from_slice(&[0x11; 32]);
+        let mut name1 = [0u8; 32];
+        name1[..2].copy_from_slice(b"A1");
+        data.extend_from_slice(&name1);
+        // Entry 2
+        data.extend_from_slice(&[0x22; 32]);
+        let mut name2 = [0u8; 32];
+        name2[..2].copy_from_slice(b"B2");
+        data.extend_from_slice(&name2);
+        let entries = parse_discover_response(&data);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "A1");
+        assert_eq!(entries[1].name, "B2");
+    }
+
+    #[test]
+    fn test_parse_discover_response_too_short_entry_ignored() {
+        // Less than 38 bytes, so no entries parsed
+        let data = vec![0u8; 37];
+        let entries = parse_discover_response(&data);
+        assert!(entries.is_empty());
     }
 }

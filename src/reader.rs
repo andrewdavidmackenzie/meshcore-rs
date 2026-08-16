@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use crate::events::*;
 use crate::packets::{BinaryReqType, ControlType, PacketType, PayloadType};
 use crate::parsing::*;
-use crate::{Result, CHANNEL_INFO_LEN, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
+use crate::Result;
 
 /// Tracks a pending binary request
 #[derive(Debug, Clone)]
@@ -241,25 +241,8 @@ impl MessageReader {
             }
 
             PacketType::Battery => {
-                if payload.len() >= 2 {
-                    let battery_mv = read_u16_le(payload, 0).unwrap_or(0);
-                    // Storage info is optional and uses u32 fields
-                    let (used_kb, total_kb) = if payload.len() >= 10 {
-                        (
-                            Some(read_u32_le(payload, 2).unwrap_or(0)),
-                            Some(read_u32_le(payload, 6).unwrap_or(0)),
-                        )
-                    } else {
-                        (None, None)
-                    };
-                    let event = MeshCoreEvent::new(
-                        EventType::Battery,
-                        EventPayload::Battery(BatteryInfo {
-                            battery_mv,
-                            used_kb,
-                            total_kb,
-                        }),
-                    );
+                if let Some(info) = parse_battery(payload) {
+                    let event = MeshCoreEvent::new(EventType::Battery, EventPayload::Battery(info));
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -274,20 +257,10 @@ impl MessageReader {
             }
 
             PacketType::MsgSent => {
-                if payload.len() >= 9 {
-                    let message_type = payload[0];
-                    let expected_ack: [u8; 4] = read_bytes(payload, 1).unwrap_or([0; 4]);
-                    let suggested_timeout = read_u32_le(payload, 5).unwrap_or(5000);
-
-                    let event = MeshCoreEvent::new(
-                        EventType::MsgSent,
-                        EventPayload::MsgSent(MsgSentInfo {
-                            message_type,
-                            expected_ack,
-                            suggested_timeout,
-                        }),
-                    )
-                    .with_attribute("tag", hex_encode(&expected_ack));
+                if let Some(info) = parse_msg_sent(payload) {
+                    let tag_hex = hex_encode(&info.expected_ack);
+                    let event = MeshCoreEvent::new(EventType::MsgSent, EventPayload::MsgSent(info))
+                        .with_attribute("tag", tag_hex);
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -359,22 +332,9 @@ impl MessageReader {
             }
 
             PacketType::ChannelInfo => {
-                // Firmware always sends CHANNEL_INFO_LEN bytes: 1 (idx) + name + secret
-                if payload.len() >= CHANNEL_INFO_LEN {
-                    let channel_idx = payload[0];
-                    let name = read_string(payload, 1, CHANNEL_NAME_LEN);
-                    let secret: [u8; CHANNEL_SECRET_LEN] =
-                        read_bytes(payload, 1 + CHANNEL_NAME_LEN)
-                            .unwrap_or([0; CHANNEL_SECRET_LEN]);
-
-                    let event = MeshCoreEvent::new(
-                        EventType::ChannelInfo,
-                        EventPayload::ChannelInfo(ChannelInfoData {
-                            channel_idx,
-                            name,
-                            secret,
-                        }),
-                    );
+                if let Some(info) = parse_channel_info(payload) {
+                    let event =
+                        MeshCoreEvent::new(EventType::ChannelInfo, EventPayload::ChannelInfo(info));
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -413,26 +373,13 @@ impl MessageReader {
             }
 
             PacketType::Stats => {
-                // Stats have a category byte followed by data
-                if !payload.is_empty() {
-                    let category = match payload[0] {
-                        0 => StatsCategory::Core,
-                        1 => StatsCategory::Radio,
-                        2 => StatsCategory::Packets,
-                        _ => StatsCategory::Core,
-                    };
-                    let event_type = match category {
+                if let Some(stats) = parse_stats(payload) {
+                    let event_type = match stats.category {
                         StatsCategory::Core => EventType::StatsCore,
                         StatsCategory::Radio => EventType::StatsRadio,
                         StatsCategory::Packets => EventType::StatsPackets,
                     };
-                    let event = MeshCoreEvent::new(
-                        event_type,
-                        EventPayload::Stats(StatsData {
-                            category,
-                            raw: payload[1..].to_vec(),
-                        }),
-                    );
+                    let event = MeshCoreEvent::new(event_type, EventPayload::Stats(stats));
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -447,51 +394,19 @@ impl MessageReader {
             }
 
             PacketType::Advertisement => {
-                if payload.len() >= 14 {
-                    let prefix: [u8; 6] = read_bytes(payload, 0).unwrap_or([0; 6]);
-                    let name = read_string(payload, 6, 32);
-                    let lat = if payload.len() >= 42 {
-                        read_i32_le(payload, 38).unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    let lon = if payload.len() >= 46 {
-                        read_i32_le(payload, 42).unwrap_or(0)
-                    } else {
-                        0
-                    };
-
+                if let Some(advert) = parse_advertisement(payload) {
                     let event = MeshCoreEvent::new(
                         EventType::Advertisement,
-                        EventPayload::Advertisement(AdvertisementData {
-                            prefix,
-                            name,
-                            lat,
-                            lon,
-                        }),
+                        EventPayload::Advertisement(advert),
                     );
                     self.dispatcher.emit(event).await;
                 }
             }
 
             PacketType::PathUpdate => {
-                if payload.len() >= 7 {
-                    let prefix: [u8; 6] = read_bytes(payload, 0).unwrap_or([0; 6]);
-                    let path_len = payload[6] as i8;
-                    let path = if payload.len() > 7 {
-                        payload[7..].to_vec()
-                    } else {
-                        Vec::new()
-                    };
-
-                    let event = MeshCoreEvent::new(
-                        EventType::PathUpdate,
-                        EventPayload::PathUpdate(PathUpdateData {
-                            prefix,
-                            path_len,
-                            path,
-                        }),
-                    );
+                if let Some(update) = parse_path_update(payload) {
+                    let event =
+                        MeshCoreEvent::new(EventType::PathUpdate, EventPayload::PathUpdate(update));
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -640,15 +555,7 @@ impl MessageReader {
                     let control_type = ControlType::from(payload[0]);
                     match control_type {
                         ControlType::NodeDiscoverResp => {
-                            // Parse discover response
-                            let mut entries = Vec::new();
-                            let mut offset = 1;
-                            while offset + 38 <= payload.len() {
-                                let pubkey = payload[offset..offset + 32].to_vec();
-                                let name = read_string(payload, offset + 32, 32);
-                                entries.push(DiscoverEntry { pubkey, name });
-                                offset += 64;
-                            }
+                            let entries = parse_discover_response(&payload[1..]);
                             let event = MeshCoreEvent::new(
                                 EventType::DiscoverResponse,
                                 EventPayload::DiscoverResponse(entries),
@@ -667,20 +574,9 @@ impl MessageReader {
             }
 
             PacketType::TraceData => {
-                // Parse trace hops
-                let mut hops = Vec::new();
-                let mut offset = 0;
-                while offset + 7 <= payload.len() {
-                    let prefix: [u8; 6] = read_bytes(payload, offset).unwrap_or([0; 6]);
-                    let snr_raw = payload[offset + 6] as i8;
-                    let snr = snr_raw as f32 / 4.0;
-                    hops.push(TraceHop { prefix, snr });
-                    offset += 7;
-                }
-                let event = MeshCoreEvent::new(
-                    EventType::TraceData,
-                    EventPayload::TraceData(TraceInfo { hops }),
-                );
+                let trace = parse_trace_data(payload);
+                let event =
+                    MeshCoreEvent::new(EventType::TraceData, EventPayload::TraceData(trace));
                 self.dispatcher.emit(event).await;
             }
 
@@ -734,6 +630,7 @@ impl MessageReader {
 mod tests {
     use super::*;
     use crate::packets::RouteType;
+    use crate::{CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
     use std::time::Duration;
 
     fn create_reader() -> (MessageReader, Arc<EventDispatcher>) {
