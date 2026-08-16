@@ -42,3 +42,15 @@ allow = ["bounds"]
 [[rules]]
 function = "meshcore_rs::parsing::read_i16_le"
 allow = ["overflow"]
+
+[[rules]]
+function = "meshcore_rs::parsing::parse_stats"
+allow = ["bounds"]
+
+[[rules]]
+function = "meshcore_rs::parsing::parse_trace_data"
+allow = ["overflow"]
+
+[[rules]]
+function = "meshcore_rs::parsing::parse_discover_response"
+allow = ["overflow"]

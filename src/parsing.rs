@@ -247,26 +247,17 @@ pub fn parse_self_info(data: &[u8]) -> Result<SelfInfo> {
 /// - Bytes 19-58: Model/manufacturer (40 bytes, null-terminated, v3+)
 /// - Bytes 59-78: Version string (20 bytes, null-terminated, v3+)
 /// - Byte 79: Repeat setting (v9+)
-pub fn parse_device_info(data: &[u8]) -> DeviceInfoData {
+pub fn parse_device_info(data: &[u8]) -> Result<DeviceInfoData> {
     // Minimum: 1 byte for fw_version_code
     if data.is_empty() {
-        return DeviceInfoData {
-            fw_version_code: 0,
-            max_contacts: None,
-            max_channels: None,
-            ble_pin: None,
-            fw_build: None,
-            model: None,
-            version: None,
-            repeat: None,
-        };
+        return Err(Error::protocol("DeviceInfo payload too short"));
     }
 
     let fw_version_code = data[0];
 
     // Version 3+ fields require fw_version_code >= 3 and sufficient data
     if fw_version_code < 3 || data.len() < 2 {
-        return DeviceInfoData {
+        return Ok(DeviceInfoData {
             fw_version_code,
             max_contacts: None,
             max_channels: None,
@@ -275,7 +266,7 @@ pub fn parse_device_info(data: &[u8]) -> DeviceInfoData {
             model: None,
             version: None,
             repeat: None,
-        };
+        });
     }
 
     // Parse v3+ fields
@@ -318,7 +309,7 @@ pub fn parse_device_info(data: &[u8]) -> DeviceInfoData {
         None
     };
 
-    DeviceInfoData {
+    Ok(DeviceInfoData {
         fw_version_code,
         max_contacts,
         max_channels,
@@ -327,7 +318,7 @@ pub fn parse_device_info(data: &[u8]) -> DeviceInfoData {
         model,
         version,
         repeat,
-    }
+    })
 }
 
 /// Parse status response (52+ bytes)
@@ -630,12 +621,14 @@ const PATH_BYTE_LEN: usize = 1;
 /// captures.
 ///
 /// Returns the decoded header together with the remaining, unparsed inner
-/// packet payload, or `None` if `data` is too short to contain a header and
-/// a path byte.
-pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])> {
+/// packet payload, or an error if `data` is too short to contain a header
+/// and a path byte.
+pub fn parse_mesh_packet_header(data: &[u8]) -> Result<(MeshPacketHeader, &[u8])> {
     // Header byte layout: bits 0-1 = route type, bits 2-5 = payload type,
     // bits 6-7 = payload format version.
-    let header_byte = *data.first()?;
+    let header_byte = *data
+        .first()
+        .ok_or_else(|| Error::protocol("MeshPacketHeader payload too short"))?;
     let route_type = RouteType::from(header_byte);
     let payload_type = PayloadType::from(header_byte >> PAYLOAD_TYPE_SHIFT);
     let payload_version = (header_byte & 0xc0) >> PAYLOAD_VERSION_SHIFT;
@@ -646,15 +639,21 @@ pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])
         route_type,
         RouteType::TransportFlood | RouteType::TransportDirect
     ) {
-        let code: [u8; 4] = read_bytes(data, offset).ok()?;
-        offset = offset.checked_add(TRANSPORT_CODE_LEN)?;
+        let code: [u8; 4] = read_bytes(data, offset)?;
+        offset = offset
+            .checked_add(TRANSPORT_CODE_LEN)
+            .ok_or_else(|| Error::protocol("MeshPacketHeader offset overflow"))?;
         Some(code)
     } else {
         None
     };
 
-    let path_byte = *data.get(offset)?;
-    offset = offset.checked_add(PATH_BYTE_LEN)?;
+    let path_byte = *data
+        .get(offset)
+        .ok_or_else(|| Error::protocol("MeshPacketHeader missing path byte"))?;
+    offset = offset
+        .checked_add(PATH_BYTE_LEN)
+        .ok_or_else(|| Error::protocol("MeshPacketHeader offset overflow"))?;
 
     // path_hash_size is bounded to 1-4 (2-bit field + 1) and path_len to
     // 0-63 (6-bit field), so their product is bounded to 252, far under
@@ -663,9 +662,11 @@ pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])
     let path_len = path_byte & 0x3F;
     let path_bytes_len = path_len as usize * path_hash_size as usize; // jonesy:allow(overflow)
 
-    let path_end = offset.checked_add(path_bytes_len)?;
+    let path_end = offset
+        .checked_add(path_bytes_len)
+        .ok_or_else(|| Error::protocol("MeshPacketHeader path length overflow"))?;
     if path_end > data.len() {
-        return None;
+        return Err(Error::protocol("MeshPacketHeader path truncated"));
     }
     let path = data[offset..path_end].to_vec(); // jonesy:allow(bounds) -- checked above
     offset = path_end;
@@ -680,7 +681,7 @@ pub fn parse_mesh_packet_header(data: &[u8]) -> Option<(MeshPacketHeader, &[u8])
         path,
     };
 
-    Some((header, &data[offset..]))
+    Ok((header, &data[offset..]))
 }
 
 const PUBLIC_KEY_LEN: usize = 32;
@@ -707,15 +708,17 @@ const FEATURE_BLOCK_LEN: usize = 2;
 
 /// Parse a raw ADVERT payload (public key, timestamp, signature, flags and
 /// optional location/name), as carried by a [`PayloadType::Advert`] packet.
-pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
+pub fn parse_raw_advertisement(data: &[u8]) -> Result<RawAdvertisement> {
     if data.len() < MIN_LEN {
-        return None;
+        return Err(Error::protocol("RawAdvertisement payload too short"));
     }
 
-    let public_key: [u8; 32] = read_bytes(data, 0).ok()?;
-    let timestamp = read_u32_le(data, TIMESTAMP_OFFSET).ok()?;
-    let signature: [u8; 64] = read_bytes(data, SIGNATURE_OFFSET).ok()?;
-    let flags = *data.get(FLAGS_OFFSET)?;
+    let public_key: [u8; 32] = read_bytes(data, 0)?;
+    let timestamp = read_u32_le(data, TIMESTAMP_OFFSET)?;
+    let signature: [u8; 64] = read_bytes(data, SIGNATURE_OFFSET)?;
+    let flags = *data
+        .get(FLAGS_OFFSET)
+        .ok_or_else(|| Error::protocol("RawAdvertisement missing flags"))?;
     let adv_type = flags & FLAG_ADV_TYPE_MASK;
 
     let mut offset = MIN_LEN;
@@ -723,20 +726,28 @@ pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
     let (lat, lon) = if flags & FLAG_HAS_LOCATION != 0 {
         // A declared location that does not fit means the capture is
         // truncated; every later offset would be wrong.
-        let lon_offset = offset.checked_add(4)?;
-        let lat = read_i32_le(data, offset).ok()?;
-        let lon = read_i32_le(data, lon_offset).ok()?;
-        offset = offset.checked_add(LOCATION_LEN)?;
+        let lon_offset = offset
+            .checked_add(4)
+            .ok_or_else(|| Error::protocol("RawAdvertisement offset overflow"))?;
+        let lat = read_i32_le(data, offset)?;
+        let lon = read_i32_le(data, lon_offset)?;
+        offset = offset
+            .checked_add(LOCATION_LEN)
+            .ok_or_else(|| Error::protocol("RawAdvertisement offset overflow"))?;
         (Some(lat), Some(lon))
     } else {
         (None, None)
     };
 
     if flags & FLAG_HAS_FEATURE1 != 0 {
-        offset = offset.checked_add(FEATURE_BLOCK_LEN)?;
+        offset = offset
+            .checked_add(FEATURE_BLOCK_LEN)
+            .ok_or_else(|| Error::protocol("RawAdvertisement offset overflow"))?;
     }
     if flags & FLAG_HAS_FEATURE2 != 0 {
-        offset = offset.checked_add(FEATURE_BLOCK_LEN)?;
+        offset = offset
+            .checked_add(FEATURE_BLOCK_LEN)
+            .ok_or_else(|| Error::protocol("RawAdvertisement offset overflow"))?;
     }
 
     let name = if flags & FLAG_HAS_NAME != 0 && data.len() > offset {
@@ -746,7 +757,7 @@ pub fn parse_raw_advertisement(data: &[u8]) -> Option<RawAdvertisement> {
         None
     };
 
-    Some(RawAdvertisement {
+    Ok(RawAdvertisement {
         public_key,
         timestamp,
         signature,
@@ -835,24 +846,24 @@ const ADVERT_RESP_NODE_DESC_LEN: usize = 32;
 /// Parse an [`AdvertResponseData`] from a raw `PacketType::AdvertResponse`
 /// payload.
 ///
-/// Returns `None` if the payload is too short to contain the mandatory
+/// Returns an error if the payload is too short to contain the mandatory
 /// fields (tag + pubkey + adv_type + node_name + timestamp + flags = 74
 /// bytes).
-pub fn parse_advert_response(payload: &[u8]) -> Option<AdvertResponseData> {
+pub fn parse_advert_response(payload: &[u8]) -> Result<AdvertResponseData> {
     if payload.len() < ADVERT_RESP_MIN_LEN {
-        return None;
+        return Err(Error::protocol("AdvertResponse payload too short"));
     }
 
-    let tag: [u8; 4] = read_bytes(payload, ADVERT_RESP_TAG_OFFSET).ok()?;
-    let pubkey: [u8; 32] = read_bytes(payload, ADVERT_RESP_PUBKEY_OFFSET).ok()?;
-    let adv_type = *payload.get(ADVERT_RESP_ADV_TYPE_OFFSET)?;
+    let tag: [u8; 4] = read_bytes(payload, ADVERT_RESP_TAG_OFFSET)?;
+    let pubkey: [u8; 32] = read_bytes(payload, ADVERT_RESP_PUBKEY_OFFSET)?;
+    let adv_type = payload[ADVERT_RESP_ADV_TYPE_OFFSET]; // jonesy:allow(bounds) -- checked >= ADVERT_RESP_MIN_LEN above
     let node_name = read_string(
         payload,
         ADVERT_RESP_NODE_NAME_OFFSET,
         ADVERT_RESP_NODE_NAME_LEN,
     );
     let timestamp = read_u32_le(payload, ADVERT_RESP_TIMESTAMP_OFFSET).unwrap_or(0);
-    let flags = *payload.get(ADVERT_RESP_FLAGS_OFFSET).unwrap_or(&0);
+    let flags = payload.get(ADVERT_RESP_FLAGS_OFFSET).copied().unwrap_or(0);
 
     let (lat, lon, node_desc) = if payload.len() >= ADVERT_RESP_LATLON_MIN_LEN {
         let lat = Some(read_i32_le(payload, ADVERT_RESP_LAT_OFFSET).unwrap_or(0));
@@ -871,7 +882,7 @@ pub fn parse_advert_response(payload: &[u8]) -> Option<AdvertResponseData> {
         (None, None, None)
     };
 
-    Some(AdvertResponseData {
+    Ok(AdvertResponseData {
         tag,
         pubkey,
         adv_type,
@@ -895,13 +906,13 @@ const BATTERY_TOTAL_KB_OFFSET: usize = 6;
 
 /// Parse a [`BatteryInfo`] from a `PacketType::Battery` payload.
 ///
-/// Returns `None` if the payload is too short to contain the voltage field.
-pub fn parse_battery(payload: &[u8]) -> Option<BatteryInfo> {
+/// Returns an error if the payload is too short to contain the voltage field.
+pub fn parse_battery(payload: &[u8]) -> Result<BatteryInfo> {
     if payload.len() < BATTERY_MIN_LEN {
-        return None;
+        return Err(Error::protocol("Battery payload too short"));
     }
 
-    let battery_mv = read_u16_le(payload, 0).ok()?;
+    let battery_mv = read_u16_le(payload, 0)?;
     let (used_kb, total_kb) = if payload.len() >= BATTERY_STORAGE_MIN_LEN {
         (
             Some(read_u32_le(payload, BATTERY_USED_KB_OFFSET).unwrap_or(0)),
@@ -911,7 +922,7 @@ pub fn parse_battery(payload: &[u8]) -> Option<BatteryInfo> {
         (None, None)
     };
 
-    Some(BatteryInfo {
+    Ok(BatteryInfo {
         battery_mv,
         used_kb,
         total_kb,
@@ -927,17 +938,17 @@ const MSG_SENT_TIMEOUT_OFFSET: usize = 5;
 
 /// Parse a [`MsgSentInfo`] from a `PacketType::MsgSent` payload.
 ///
-/// Returns `None` if the payload is too short.
-pub fn parse_msg_sent(payload: &[u8]) -> Option<MsgSentInfo> {
+/// Returns an error if the payload is too short.
+pub fn parse_msg_sent(payload: &[u8]) -> Result<MsgSentInfo> {
     if payload.len() < MSG_SENT_MIN_LEN {
-        return None;
+        return Err(Error::protocol("MsgSent payload too short"));
     }
 
     let message_type = payload[0]; // jonesy:allow(bounds) -- checked >= MSG_SENT_MIN_LEN above
-    let expected_ack: [u8; 4] = read_bytes(payload, MSG_SENT_ACK_OFFSET).ok()?;
+    let expected_ack: [u8; 4] = read_bytes(payload, MSG_SENT_ACK_OFFSET)?;
     let suggested_timeout = read_u32_le(payload, MSG_SENT_TIMEOUT_OFFSET).unwrap_or(5000);
 
-    Some(MsgSentInfo {
+    Ok(MsgSentInfo {
         message_type,
         expected_ack,
         suggested_timeout,
@@ -951,11 +962,11 @@ pub fn parse_msg_sent(payload: &[u8]) -> Option<MsgSentInfo> {
 /// The firmware always sends `CHANNEL_INFO_LEN` bytes:
 /// 1 (idx) + CHANNEL_NAME_LEN (name) + CHANNEL_SECRET_LEN (secret).
 ///
-/// Returns `None` if the payload is too short.
-pub fn parse_channel_info(payload: &[u8]) -> Option<ChannelInfoData> {
+/// Returns an error if the payload is too short.
+pub fn parse_channel_info(payload: &[u8]) -> Result<ChannelInfoData> {
     let min_len = 1 + CHANNEL_NAME_LEN + CHANNEL_SECRET_LEN;
     if payload.len() < min_len {
-        return None;
+        return Err(Error::protocol("ChannelInfo payload too short"));
     }
 
     let channel_idx = payload[0]; // jonesy:allow(bounds) -- checked >= min_len above
@@ -963,7 +974,7 @@ pub fn parse_channel_info(payload: &[u8]) -> Option<ChannelInfoData> {
     let secret: [u8; CHANNEL_SECRET_LEN] =
         read_bytes(payload, 1 + CHANNEL_NAME_LEN).unwrap_or([0; CHANNEL_SECRET_LEN]);
 
-    Some(ChannelInfoData {
+    Ok(ChannelInfoData {
         channel_idx,
         name,
         secret,
@@ -975,10 +986,10 @@ pub fn parse_channel_info(payload: &[u8]) -> Option<ChannelInfoData> {
 /// Parse a [`StatsData`] (with its [`StatsCategory`]) from a
 /// `PacketType::Stats` payload.
 ///
-/// Returns `None` if the payload is empty.
-pub fn parse_stats(payload: &[u8]) -> Option<StatsData> {
+/// Returns an error if the payload is empty.
+pub fn parse_stats(payload: &[u8]) -> Result<StatsData> {
     if payload.is_empty() {
-        return None;
+        return Err(Error::protocol("Stats payload too short"));
     }
 
     let category = match payload[0] {
@@ -989,7 +1000,7 @@ pub fn parse_stats(payload: &[u8]) -> Option<StatsData> {
         _ => StatsCategory::Core,
     };
 
-    Some(StatsData {
+    Ok(StatsData {
         category,
         raw: payload[1..].to_vec(),
     })
@@ -1011,14 +1022,14 @@ const ADVERT_LON_OFFSET: usize = ADVERT_LAT_OFFSET + 4;
 
 /// Parse an [`AdvertisementData`] from a `PacketType::Advertisement` payload.
 ///
-/// Returns `None` if the payload is too short to contain the prefix and
+/// Returns an error if the payload is too short to contain the prefix and
 /// at least part of the name.
-pub fn parse_advertisement(payload: &[u8]) -> Option<AdvertisementData> {
+pub fn parse_advertisement(payload: &[u8]) -> Result<AdvertisementData> {
     if payload.len() < ADVERT_MIN_LEN {
-        return None;
+        return Err(Error::protocol("Advertisement payload too short"));
     }
 
-    let prefix: [u8; 6] = read_bytes(payload, 0).ok()?;
+    let prefix: [u8; 6] = read_bytes(payload, 0)?;
     let name = read_string(payload, ADVERT_NAME_OFFSET, ADVERT_NAME_LEN);
     let lat = if payload.len() >= ADVERT_LAT_OFFSET + 4 {
         read_i32_le(payload, ADVERT_LAT_OFFSET).unwrap_or(0)
@@ -1031,7 +1042,7 @@ pub fn parse_advertisement(payload: &[u8]) -> Option<AdvertisementData> {
         0
     };
 
-    Some(AdvertisementData {
+    Ok(AdvertisementData {
         prefix,
         name,
         lat,
@@ -1048,13 +1059,13 @@ const PATH_UPDATE_PATH_OFFSET: usize = 7;
 
 /// Parse a [`PathUpdateData`] from a `PacketType::PathUpdate` payload.
 ///
-/// Returns `None` if the payload is too short.
-pub fn parse_path_update(payload: &[u8]) -> Option<PathUpdateData> {
+/// Returns an error if the payload is too short.
+pub fn parse_path_update(payload: &[u8]) -> Result<PathUpdateData> {
     if payload.len() < PATH_UPDATE_MIN_LEN {
-        return None;
+        return Err(Error::protocol("PathUpdate payload too short"));
     }
 
-    let prefix: [u8; 6] = read_bytes(payload, 0).ok()?;
+    let prefix: [u8; 6] = read_bytes(payload, 0)?;
     let path_len = payload[PATH_UPDATE_PATH_LEN_OFFSET] as i8; // jonesy:allow(bounds) -- checked >= PATH_UPDATE_MIN_LEN above
     let path = if payload.len() > PATH_UPDATE_PATH_OFFSET {
         payload[PATH_UPDATE_PATH_OFFSET..].to_vec()
@@ -1062,7 +1073,7 @@ pub fn parse_path_update(payload: &[u8]) -> Option<PathUpdateData> {
         Vec::new()
     };
 
-    Some(PathUpdateData {
+    Ok(PathUpdateData {
         prefix,
         path_len,
         path,
@@ -1122,6 +1133,58 @@ pub fn parse_discover_response(payload: &[u8]) -> Vec<DiscoverEntry> {
     entries
 }
 
+// --- CurrentTime payload layout ---
+
+/// Minimum length for a CurrentTime payload.
+const CURRENT_TIME_MIN_LEN: usize = 4;
+
+/// Parse a Unix timestamp from a `PacketType::CurrentTime` payload.
+pub fn parse_current_time(payload: &[u8]) -> Result<u32> {
+    if payload.len() < CURRENT_TIME_MIN_LEN {
+        return Err(Error::protocol("CurrentTime payload too short"));
+    }
+    read_u32_le(payload, 0)
+}
+
+// --- PrivateKey payload layout ---
+
+/// Length of a private key.
+const PRIVATE_KEY_LEN: usize = 64;
+
+/// Parse a 64-byte private key from a `PacketType::PrivateKey` payload.
+pub fn parse_private_key(payload: &[u8]) -> Result<[u8; 64]> {
+    if payload.len() < PRIVATE_KEY_LEN {
+        return Err(Error::protocol("PrivateKey payload too short"));
+    }
+    read_bytes(payload, 0)
+}
+
+// --- SignStart payload layout ---
+
+/// Minimum length for a SignStart payload.
+const SIGN_START_MIN_LEN: usize = 4;
+
+/// Parse the `max_length` from a `PacketType::SignStart` payload.
+pub fn parse_sign_start(payload: &[u8]) -> Result<u32> {
+    if payload.len() < SIGN_START_MIN_LEN {
+        return Err(Error::protocol("SignStart payload too short"));
+    }
+    read_u32_le(payload, 0)
+}
+
+// --- Ack payload layout ---
+
+/// Minimum length for an Ack payload.
+const ACK_MIN_LEN: usize = 4;
+
+/// Parse a 4-byte tag from a `PacketType::Ack` payload.
+pub fn parse_ack(payload: &[u8]) -> Result<[u8; 4]> {
+    if payload.len() < ACK_MIN_LEN {
+        return Err(Error::protocol("Ack payload too short"));
+    }
+    read_bytes(payload, 0)
+}
+
 // --- ContactEnd payload layout ---
 
 /// Minimum length for a ContactEnd payload to contain a
@@ -1131,12 +1194,13 @@ const CONTACT_END_TIMESTAMP_LEN: usize = 4;
 /// Parse the optional `last_modification_timestamp` from a
 /// `PacketType::ContactEnd` payload.
 ///
-/// Returns `0` if the payload is too short to contain the timestamp.
-pub fn parse_contact_end_timestamp(payload: &[u8]) -> u32 {
+/// Returns `Ok(None)` if the payload is too short to contain the
+/// timestamp (the timestamp is optional in the protocol).
+pub fn parse_contact_end_timestamp(payload: &[u8]) -> Result<Option<u32>> {
     if payload.len() >= CONTACT_END_TIMESTAMP_LEN {
-        read_u32_le(payload, 0).unwrap_or(0)
+        Ok(Some(read_u32_le(payload, 0)?))
     } else {
-        0
+        Ok(None)
     }
 }
 
@@ -1158,17 +1222,17 @@ pub struct StatusResponseFrame {
 /// Parse a [`StatusResponseFrame`] from a `PacketType::StatusResponse`
 /// payload.
 ///
-/// Returns `None` if the payload is too short or the status data cannot
+/// Returns an error if the payload is too short or the status data cannot
 /// be parsed.
-pub fn parse_status_response(payload: &[u8]) -> Option<StatusResponseFrame> {
+pub fn parse_status_response(payload: &[u8]) -> Result<StatusResponseFrame> {
     if payload.len() < STATUS_RESP_MIN_LEN {
-        return None;
+        return Err(Error::protocol("StatusResponse payload too short"));
     }
 
-    let sender_prefix: [u8; 6] = read_bytes(payload, 0).ok()?;
-    let status = parse_status(&payload[STATUS_RESP_PREFIX_LEN..], sender_prefix).ok()?;
+    let sender_prefix: [u8; 6] = read_bytes(payload, 0)?;
+    let status = parse_status(&payload[STATUS_RESP_PREFIX_LEN..], sender_prefix)?;
 
-    Some(StatusResponseFrame {
+    Ok(StatusResponseFrame {
         sender_prefix,
         status,
     })
@@ -1192,16 +1256,16 @@ pub struct TelemetryResponseFrame {
 /// Parse a [`TelemetryResponseFrame`] from a
 /// `PacketType::TelemetryResponse` payload.
 ///
-/// Returns `None` if the payload is too short.
-pub fn parse_telemetry_response(payload: &[u8]) -> Option<TelemetryResponseFrame> {
+/// Returns an error if the payload is too short.
+pub fn parse_telemetry_response(payload: &[u8]) -> Result<TelemetryResponseFrame> {
     if payload.len() < TELEMETRY_RESP_MIN_LEN {
-        return None;
+        return Err(Error::protocol("TelemetryResponse payload too short"));
     }
 
-    let tag: [u8; 4] = read_bytes(payload, 0).ok()?;
+    let tag: [u8; 4] = read_bytes(payload, 0)?;
     let data = payload[TELEMETRY_RESP_DATA_OFFSET..].to_vec();
 
-    Some(TelemetryResponseFrame { tag, data })
+    Ok(TelemetryResponseFrame { tag, data })
 }
 
 // --- CustomVars payload ---
@@ -1250,17 +1314,17 @@ pub struct BinaryResponseFrame {
 /// Parse the frame envelope of a `PacketType::BinaryResponse` payload,
 /// extracting the tag and data.
 ///
-/// Returns `None` if the payload is too short to contain the subtype
+/// Returns an error if the payload is too short to contain the subtype
 /// byte and the 4-byte tag.
-pub fn parse_binary_response_frame(payload: &[u8]) -> Option<BinaryResponseFrame> {
+pub fn parse_binary_response_frame(payload: &[u8]) -> Result<BinaryResponseFrame> {
     if payload.len() < BINARY_RESP_MIN_LEN {
-        return None;
+        return Err(Error::protocol("BinaryResponse payload too short"));
     }
 
-    let tag: [u8; 4] = read_bytes(payload, BINARY_RESP_TAG_OFFSET).ok()?;
+    let tag: [u8; 4] = read_bytes(payload, BINARY_RESP_TAG_OFFSET)?;
     let data = payload[BINARY_RESP_DATA_OFFSET..].to_vec();
 
-    Some(BinaryResponseFrame { tag, data })
+    Ok(BinaryResponseFrame { tag, data })
 }
 
 #[cfg(test)]
@@ -1812,17 +1876,14 @@ mod tests {
 
     #[test]
     fn test_parse_device_info_empty() {
-        let info = parse_device_info(&[]);
-        assert_eq!(info.fw_version_code, 0);
-        assert!(info.max_contacts.is_none());
-        assert!(info.model.is_none());
+        assert!(parse_device_info(&[]).is_err());
     }
 
     #[test]
     fn test_parse_device_info_v2() {
         // Pre-v3 firmware only has version code
         let data = [2u8]; // fw_version_code = 2
-        let info = parse_device_info(&data);
+        let info = parse_device_info(&data).unwrap();
         assert_eq!(info.fw_version_code, 2);
         assert!(info.max_contacts.is_none());
         assert!(info.max_channels.is_none());
@@ -1838,7 +1899,7 @@ mod tests {
         data[2] = 4; // max_channels
         data[3..7].copy_from_slice(&5678u32.to_le_bytes()); // ble_pin
 
-        let info = parse_device_info(&data);
+        let info = parse_device_info(&data).unwrap();
         assert_eq!(info.fw_version_code, 3);
         assert_eq!(info.max_contacts, Some(50)); // 25 * 2
         assert_eq!(info.max_channels, Some(4));
@@ -1870,7 +1931,7 @@ mod tests {
         // repeat at offset 79
         data[79] = 1;
 
-        let info = parse_device_info(&data);
+        let info = parse_device_info(&data).unwrap();
         assert_eq!(info.fw_version_code, 9);
         assert_eq!(info.max_contacts, Some(100));
         assert_eq!(info.max_channels, Some(8));
@@ -1887,7 +1948,7 @@ mod tests {
         data[0] = 9;
         data[79] = 0; // repeat disabled
 
-        let info = parse_device_info(&data);
+        let info = parse_device_info(&data).unwrap();
         assert_eq!(info.repeat, Some(false));
     }
 
@@ -1898,7 +1959,7 @@ mod tests {
         data[0] = 3;
         data[1] = 200; // 200 * 2 = 400, but u8 max is 255, so saturates to 255
 
-        let info = parse_device_info(&data);
+        let info = parse_device_info(&data).unwrap();
         // 200 * 2 would overflow u8, but we use saturating_mul
         assert_eq!(info.max_contacts, Some(255)); // Saturated
     }
@@ -1956,28 +2017,28 @@ mod tests {
 
     #[test]
     fn test_parse_mesh_packet_header_empty() {
-        assert!(parse_mesh_packet_header(&[]).is_none());
+        assert!(parse_mesh_packet_header(&[]).is_err());
     }
 
     #[test]
     fn test_parse_mesh_packet_header_missing_path_byte() {
         // Direct route, no transport code, but no path byte follows
         let data = [2u8];
-        assert!(parse_mesh_packet_header(&data).is_none());
+        assert!(parse_mesh_packet_header(&data).is_err());
     }
 
     #[test]
     fn test_parse_mesh_packet_header_path_truncated() {
         // path_len=5, path_hash_size=1 declared, but no path bytes follow
         let data = [1u8, 0b00_000101];
-        assert!(parse_mesh_packet_header(&data).is_none());
+        assert!(parse_mesh_packet_header(&data).is_err());
     }
 
     #[test]
     fn test_parse_mesh_packet_header_missing_transport_code() {
         // TransportDirect route requires a 4-byte transport code that isn't present
         let data = [3u8, 0x11, 0x22];
-        assert!(parse_mesh_packet_header(&data).is_none());
+        assert!(parse_mesh_packet_header(&data).is_err());
     }
 
     #[test]
@@ -2034,7 +2095,7 @@ mod tests {
     #[test]
     fn test_parse_raw_advertisement_too_short() {
         let data = vec![0u8; MIN_LEN - 1];
-        assert!(parse_raw_advertisement(&data).is_none());
+        assert!(parse_raw_advertisement(&data).is_err());
     }
 
     #[test]
@@ -2047,7 +2108,7 @@ mod tests {
         data[FLAGS_OFFSET] = FLAG_HAS_LOCATION | FLAG_HAS_NAME;
         data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
 
-        assert!(parse_raw_advertisement(&data).is_none());
+        assert!(parse_raw_advertisement(&data).is_err());
     }
 
     // ========== parse_advert_response tests ==========
@@ -2070,12 +2131,12 @@ mod tests {
     #[test]
     fn test_parse_advert_response_too_short() {
         let data = vec![0u8; ADVERT_RESP_MIN_LEN - 1];
-        assert!(parse_advert_response(&data).is_none());
+        assert!(parse_advert_response(&data).is_err());
     }
 
     #[test]
     fn test_parse_advert_response_empty() {
-        assert!(parse_advert_response(&[]).is_none());
+        assert!(parse_advert_response(&[]).is_err());
     }
 
     #[test]
@@ -2168,8 +2229,8 @@ mod tests {
 
     #[test]
     fn test_parse_battery_too_short() {
-        assert!(parse_battery(&[]).is_none());
-        assert!(parse_battery(&[0x01]).is_none());
+        assert!(parse_battery(&[]).is_err());
+        assert!(parse_battery(&[0x01]).is_err());
     }
 
     #[test]
@@ -2209,8 +2270,8 @@ mod tests {
 
     #[test]
     fn test_parse_msg_sent_too_short() {
-        assert!(parse_msg_sent(&[]).is_none());
-        assert!(parse_msg_sent(&[0; 8]).is_none());
+        assert!(parse_msg_sent(&[]).is_err());
+        assert!(parse_msg_sent(&[0; 8]).is_err());
     }
 
     #[test]
@@ -2228,8 +2289,8 @@ mod tests {
 
     #[test]
     fn test_parse_channel_info_too_short() {
-        assert!(parse_channel_info(&[]).is_none());
-        assert!(parse_channel_info(&[0; 48]).is_none()); // need 49
+        assert!(parse_channel_info(&[]).is_err());
+        assert!(parse_channel_info(&[0; 48]).is_err()); // need 49
     }
 
     #[test]
@@ -2249,7 +2310,7 @@ mod tests {
 
     #[test]
     fn test_parse_stats_empty() {
-        assert!(parse_stats(&[]).is_none());
+        assert!(parse_stats(&[]).is_err());
     }
 
     #[test]
@@ -2286,8 +2347,8 @@ mod tests {
 
     #[test]
     fn test_parse_advertisement_too_short() {
-        assert!(parse_advertisement(&[]).is_none());
-        assert!(parse_advertisement(&[0; 13]).is_none());
+        assert!(parse_advertisement(&[]).is_err());
+        assert!(parse_advertisement(&[0; 13]).is_err());
     }
 
     #[test]
@@ -2322,8 +2383,8 @@ mod tests {
 
     #[test]
     fn test_parse_path_update_too_short() {
-        assert!(parse_path_update(&[]).is_none());
-        assert!(parse_path_update(&[0; 6]).is_none());
+        assert!(parse_path_update(&[]).is_err());
+        assert!(parse_path_update(&[0; 6]).is_err());
     }
 
     #[test]
@@ -2446,8 +2507,8 @@ mod tests {
 
     #[test]
     fn test_parse_status_response_too_short() {
-        assert!(parse_status_response(&[]).is_none());
-        assert!(parse_status_response(&[0; 57]).is_none());
+        assert!(parse_status_response(&[]).is_err());
+        assert!(parse_status_response(&[0; 57]).is_err());
     }
 
     #[test]
@@ -2470,8 +2531,8 @@ mod tests {
 
     #[test]
     fn test_parse_telemetry_response_too_short() {
-        assert!(parse_telemetry_response(&[]).is_none());
-        assert!(parse_telemetry_response(&[0; 3]).is_none());
+        assert!(parse_telemetry_response(&[]).is_err());
+        assert!(parse_telemetry_response(&[0; 3]).is_err());
     }
 
     #[test]
@@ -2526,8 +2587,8 @@ mod tests {
 
     #[test]
     fn test_parse_binary_response_frame_too_short() {
-        assert!(parse_binary_response_frame(&[]).is_none());
-        assert!(parse_binary_response_frame(&[0; 4]).is_none());
+        assert!(parse_binary_response_frame(&[]).is_err());
+        assert!(parse_binary_response_frame(&[0; 4]).is_err());
     }
 
     #[test]
@@ -2560,24 +2621,30 @@ mod tests {
 
     #[test]
     fn test_parse_contact_end_timestamp_empty() {
-        assert_eq!(parse_contact_end_timestamp(&[]), 0);
+        assert_eq!(parse_contact_end_timestamp(&[]).unwrap(), None);
     }
 
     #[test]
     fn test_parse_contact_end_timestamp_too_short() {
-        assert_eq!(parse_contact_end_timestamp(&[0x01, 0x02, 0x03]), 0);
+        assert_eq!(
+            parse_contact_end_timestamp(&[0x01, 0x02, 0x03]).unwrap(),
+            None
+        );
     }
 
     #[test]
     fn test_parse_contact_end_timestamp_valid() {
         let data = 1700000000u32.to_le_bytes();
-        assert_eq!(parse_contact_end_timestamp(&data), 1700000000);
+        assert_eq!(
+            parse_contact_end_timestamp(&data).unwrap(),
+            Some(1700000000)
+        );
     }
 
     #[test]
     fn test_parse_contact_end_timestamp_with_extra_bytes() {
         let mut data = 42u32.to_le_bytes().to_vec();
         data.extend_from_slice(&[0xFF, 0xFF]); // extra trailing bytes
-        assert_eq!(parse_contact_end_timestamp(&data), 42);
+        assert_eq!(parse_contact_end_timestamp(&data).unwrap(), Some(42));
     }
 }
