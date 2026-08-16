@@ -142,6 +142,8 @@ pub enum EventPayload {
     BinaryResponse { tag: [u8; 4], data: Vec<u8> },
     /// Discover response
     DiscoverResponse(Vec<DiscoverEntry>),
+    /// Path discovery response
+    PathDiscoveryResponse(PathDiscoveryResponseData),
     /// Advert response
     AdvertResponse(AdvertResponseData),
     /// Stats data
@@ -516,6 +518,25 @@ pub struct DiscoverEntry {
     pub pubkey: Vec<u8>,
     /// Node name
     pub name: String,
+}
+
+/// Path discovery response data
+#[derive(Debug, Clone)]
+pub struct PathDiscoveryResponseData {
+    /// 6-byte public key prefix of the responding node
+    pub pubkey_prefix: [u8; 6],
+    /// Outbound path length (number of hops)
+    pub out_path_len: u8,
+    /// Outbound path hash size (bytes per hop hash, 1-4)
+    pub out_path_hash_len: u8,
+    /// Outbound path hashes
+    pub out_path: Vec<u8>,
+    /// Inbound path length (number of hops)
+    pub in_path_len: u8,
+    /// Inbound path hash size (bytes per hop hash, 1-4)
+    pub in_path_hash_len: u8,
+    /// Inbound path hashes
+    pub in_path: Vec<u8>,
 }
 
 /// Advertisement response data

@@ -6,8 +6,8 @@ use crate::error::Error;
 use crate::events::{
     AclEntry, AdvertResponseData, AdvertisementData, BatteryInfo, ChannelInfoData, ChannelMessage,
     Contact, ContactMessage, DeviceInfoData, DiscoverEntry, MeshPacketHeader, MmaEntry,
-    MsgSentInfo, Neighbour, NeighboursData, PathUpdateData, RawAdvertisement, SelfInfo,
-    StatsCategory, StatsData, StatusData, TraceHop, TraceInfo,
+    MsgSentInfo, Neighbour, NeighboursData, PathDiscoveryResponseData, PathUpdateData,
+    RawAdvertisement, SelfInfo, StatsCategory, StatsData, StatusData, TraceHop, TraceInfo,
 };
 use crate::packets::{PayloadType, RouteType};
 use crate::{Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
@@ -1325,6 +1325,81 @@ pub fn parse_binary_response_frame(payload: &[u8]) -> Result<BinaryResponseFrame
     let data = payload[BINARY_RESP_DATA_OFFSET..].to_vec();
 
     Ok(BinaryResponseFrame { tag, data })
+}
+
+// --- PathDiscoveryResponse payload layout ---
+//
+// Firmware layout: [reserved: 1][pubkey_prefix: 6][out_path_byte: 1][out_path...][in_path_byte: 1][in_path...]
+// The path byte encodes hash_len in bits 6-7 and hop count in bits 0-5.
+
+/// Length of the reserved byte at the start of the response.
+const PATH_DISC_RESERVED_LEN: usize = 1;
+/// Length of the public key prefix.
+const PATH_DISC_PREFIX_LEN: usize = 6;
+/// Minimum payload length: reserved + prefix + out_path_byte + in_path_byte.
+const PATH_DISC_MIN_LEN: usize = PATH_DISC_RESERVED_LEN + PATH_DISC_PREFIX_LEN + 1 + 1;
+/// Offset of the public key prefix.
+const PATH_DISC_PREFIX_OFFSET: usize = PATH_DISC_RESERVED_LEN;
+/// Offset of the outbound path descriptor byte.
+const PATH_DISC_OUT_PATH_OFFSET: usize = PATH_DISC_PREFIX_OFFSET + PATH_DISC_PREFIX_LEN;
+
+/// Parse a [`PathDiscoveryResponseData`] from a
+/// `PacketType::PathDiscoveryResponse` payload.
+///
+/// Returns an error if the payload is too short.
+pub fn parse_path_discovery_response(payload: &[u8]) -> Result<PathDiscoveryResponseData> {
+    if payload.len() < PATH_DISC_MIN_LEN {
+        return Err(Error::protocol("PathDiscoveryResponse payload too short"));
+    }
+
+    let pubkey_prefix: [u8; 6] = read_bytes(payload, PATH_DISC_PREFIX_OFFSET)?;
+
+    // Outbound path
+    let out_path_byte = payload[PATH_DISC_OUT_PATH_OFFSET]; // jonesy:allow(bounds) -- checked >= PATH_DISC_MIN_LEN
+    let out_path_hash_len = ((out_path_byte & 0xC0) >> 6) + 1; // jonesy:allow(overflow)
+    let out_path_len = out_path_byte & 0x3F;
+    let out_path_bytes = out_path_len as usize * out_path_hash_len as usize; // jonesy:allow(overflow)
+
+    let out_path_start = PATH_DISC_OUT_PATH_OFFSET + 1; // jonesy:allow(overflow)
+    let out_path_end = out_path_start
+        .checked_add(out_path_bytes)
+        .ok_or_else(|| Error::protocol("PathDiscoveryResponse outbound path overflow"))?;
+    if out_path_end >= payload.len() {
+        return Err(Error::protocol(
+            "PathDiscoveryResponse outbound path truncated",
+        ));
+    }
+    let out_path = payload[out_path_start..out_path_end].to_vec(); // jonesy:allow(bounds) -- checked above
+
+    // Inbound path
+    let in_path_byte_offset = out_path_end;
+    let in_path_byte = *payload
+        .get(in_path_byte_offset)
+        .ok_or_else(|| Error::protocol("PathDiscoveryResponse missing inbound path byte"))?;
+    let in_path_hash_len = ((in_path_byte & 0xC0) >> 6) + 1; // jonesy:allow(overflow)
+    let in_path_len = in_path_byte & 0x3F;
+    let in_path_bytes = in_path_len as usize * in_path_hash_len as usize; // jonesy:allow(overflow)
+
+    let in_path_start = in_path_byte_offset + 1; // jonesy:allow(overflow)
+    let in_path_end = in_path_start
+        .checked_add(in_path_bytes)
+        .ok_or_else(|| Error::protocol("PathDiscoveryResponse inbound path overflow"))?;
+    if in_path_end > payload.len() {
+        return Err(Error::protocol(
+            "PathDiscoveryResponse inbound path truncated",
+        ));
+    }
+    let in_path = payload[in_path_start..in_path_end].to_vec(); // jonesy:allow(bounds) -- checked above
+
+    Ok(PathDiscoveryResponseData {
+        pubkey_prefix,
+        out_path_len,
+        out_path_hash_len,
+        out_path,
+        in_path_len,
+        in_path_hash_len,
+        in_path,
+    })
 }
 
 #[cfg(test)]
@@ -2702,5 +2777,73 @@ mod tests {
     fn test_parse_ack_valid() {
         let data = [0x11, 0x22, 0x33, 0x44];
         assert_eq!(parse_ack(&data).unwrap(), [0x11, 0x22, 0x33, 0x44]);
+    }
+
+    // ========== parse_path_discovery_response tests ==========
+
+    #[test]
+    fn test_parse_path_discovery_response_too_short() {
+        assert!(parse_path_discovery_response(&[]).is_err());
+        assert!(parse_path_discovery_response(&[0; 7]).is_err()); // need at least 9
+    }
+
+    #[test]
+    fn test_parse_path_discovery_response_no_paths() {
+        let mut data = vec![0x00]; // reserved
+        data.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]); // pubkey prefix
+        data.push(0x00); // out_path: hash_len=1, path_len=0
+        data.push(0x00); // in_path: hash_len=1, path_len=0
+
+        let resp = parse_path_discovery_response(&data).unwrap();
+        assert_eq!(resp.pubkey_prefix, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        assert_eq!(resp.out_path_len, 0);
+        assert_eq!(resp.out_path_hash_len, 1);
+        assert!(resp.out_path.is_empty());
+        assert_eq!(resp.in_path_len, 0);
+        assert_eq!(resp.in_path_hash_len, 1);
+        assert!(resp.in_path.is_empty());
+    }
+
+    #[test]
+    fn test_parse_path_discovery_response_with_paths() {
+        let mut data = vec![0x00]; // reserved
+        data.extend_from_slice(&[0xAA; 6]); // pubkey prefix
+                                            // out_path: hash_len=2 (bits 6-7 = 0b01 -> +1 = 2), path_len=2
+        data.push(0b01_000010);
+        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // 2 hops * 2 bytes = 4
+                                                           // in_path: hash_len=1 (bits 6-7 = 0b00 -> +1 = 1), path_len=3
+        data.push(0b00_000011);
+        data.extend_from_slice(&[0xA1, 0xA2, 0xA3]); // 3 hops * 1 byte = 3
+
+        let resp = parse_path_discovery_response(&data).unwrap();
+        assert_eq!(resp.out_path_len, 2);
+        assert_eq!(resp.out_path_hash_len, 2);
+        assert_eq!(resp.out_path, vec![0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(resp.in_path_len, 3);
+        assert_eq!(resp.in_path_hash_len, 1);
+        assert_eq!(resp.in_path, vec![0xA1, 0xA2, 0xA3]);
+    }
+
+    #[test]
+    fn test_parse_path_discovery_response_outbound_truncated() {
+        let mut data = vec![0x00]; // reserved
+        data.extend_from_slice(&[0xBB; 6]); // pubkey prefix
+                                            // out_path: hash_len=1, path_len=5 (needs 5 bytes)
+        data.push(0b00_000101);
+        data.extend_from_slice(&[0x01, 0x02]); // only 2 bytes, need 5
+
+        assert!(parse_path_discovery_response(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_path_discovery_response_inbound_truncated() {
+        let mut data = vec![0x00]; // reserved
+        data.extend_from_slice(&[0xCC; 6]); // pubkey prefix
+        data.push(0x00); // out_path: no hops
+                         // in_path: hash_len=1, path_len=2 (needs 2 bytes)
+        data.push(0b00_000010);
+        data.push(0xDD); // only 1 byte, need 2
+
+        assert!(parse_path_discovery_response(&data).is_err());
     }
 }
