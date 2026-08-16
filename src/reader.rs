@@ -568,8 +568,16 @@ impl MessageReader {
                 self.dispatcher.emit(event).await;
             }
 
-            // TODO: parse path discovery response (#74)
-            PacketType::PathDiscoveryResponse => {}
+            PacketType::PathDiscoveryResponse => {
+                let resp = parse_path_discovery_response(payload)?;
+                let prefix_hex = hex_encode(&resp.pubkey_prefix);
+                let event = MeshCoreEvent::new(
+                    EventType::PathDiscoveryResponse,
+                    EventPayload::PathDiscoveryResponse(resp),
+                )
+                .with_attribute("prefix", prefix_hex);
+                self.dispatcher.emit(event).await;
+            }
             _ => {
                 tracing::debug!("Unknown packet type: {:?}", packet_type);
                 let event = MeshCoreEvent::new(EventType::Unknown, EventPayload::Bytes(data));
@@ -2617,5 +2625,48 @@ mod tests {
             result.is_err(),
             "Command-only packet types should not emit events"
         );
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_path_discovery_response() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::PathDiscoveryResponse as u8];
+        data.push(0x00); // reserved
+        data.extend_from_slice(&[0xAA; 6]); // pubkey prefix
+                                            // out_path: hash_len=1, path_len=1
+        data.push(0b00_000001);
+        data.push(0x11); // one hop
+                         // in_path: hash_len=1, path_len=0
+        data.push(0x00);
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::PathDiscoveryResponse);
+        match event.payload {
+            EventPayload::PathDiscoveryResponse(resp) => {
+                assert_eq!(resp.pubkey_prefix, [0xAA; 6]);
+                assert_eq!(resp.out_path_len, 1);
+                assert_eq!(resp.out_path, vec![0x11]);
+                assert_eq!(resp.in_path_len, 0);
+                assert!(resp.in_path.is_empty());
+            }
+            _ => panic!("Expected PathDiscoveryResponse payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_path_discovery_response_too_short() {
+        let (reader, _dispatcher) = create_reader();
+
+        // Too short for PathDiscoveryResponse
+        let data = vec![PacketType::PathDiscoveryResponse as u8, 0x00, 0x01];
+        assert!(reader.handle_rx(data).await.is_err());
     }
 }
