@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use crate::events::*;
 use crate::packets::{BinaryReqType, ControlType, PacketType, PayloadType};
 use crate::parsing::*;
-use crate::{Result, CHANNEL_INFO_LEN, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
+use crate::Result;
 
 /// Tracks a pending binary request
 #[derive(Debug, Clone)]
@@ -158,6 +158,91 @@ impl MessageReader {
             .retain(|_, req| req.expires_at > now);
     }
 
+    /// Dispatch a `PacketType::BinaryResponse` frame based on a pending
+    /// request (if any). Returns the appropriate [`MeshCoreEvent`].
+    fn dispatch_binary_response(
+        tag: [u8; 4],
+        data: Vec<u8>,
+        request: Option<BinaryRequest>,
+    ) -> MeshCoreEvent {
+        if let Some(req) = request {
+            match req.request_type {
+                BinaryReqType::Status => {
+                    if let Ok(status) = parse_status(&data, [0; 6]) {
+                        MeshCoreEvent::new(EventType::StatusResponse, EventPayload::Status(status))
+                    } else {
+                        MeshCoreEvent::new(
+                            EventType::BinaryResponse,
+                            EventPayload::BinaryResponse { tag, data },
+                        )
+                    }
+                }
+                BinaryReqType::Telemetry => {
+                    MeshCoreEvent::new(EventType::TelemetryResponse, EventPayload::Telemetry(data))
+                }
+                BinaryReqType::Mma => {
+                    let entries = parse_mma(&data);
+                    MeshCoreEvent::new(EventType::MmaResponse, EventPayload::Mma(entries))
+                }
+                BinaryReqType::Acl => {
+                    let entries = parse_acl(&data);
+                    MeshCoreEvent::new(EventType::AclResponse, EventPayload::Acl(entries))
+                }
+                BinaryReqType::Neighbours => {
+                    let pk_plen = req
+                        .context
+                        .get("pubkey_prefix_length")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(4);
+                    if let Ok(neighbours) = parse_neighbours(&data, pk_plen) {
+                        MeshCoreEvent::new(
+                            EventType::NeighboursResponse,
+                            EventPayload::Neighbours(neighbours),
+                        )
+                    } else {
+                        MeshCoreEvent::new(
+                            EventType::BinaryResponse,
+                            EventPayload::BinaryResponse { tag, data },
+                        )
+                    }
+                }
+                BinaryReqType::KeepAlive => MeshCoreEvent::new(
+                    EventType::BinaryResponse,
+                    EventPayload::BinaryResponse { tag, data },
+                ),
+            }
+        } else {
+            MeshCoreEvent::new(
+                EventType::BinaryResponse,
+                EventPayload::BinaryResponse { tag, data },
+            )
+        }
+    }
+
+    /// Dispatch a `PacketType::ControlData` payload, returning the
+    /// appropriate [`MeshCoreEvent`].
+    fn dispatch_control_data(payload: &[u8]) -> Option<MeshCoreEvent> {
+        if payload.is_empty() {
+            return None;
+        }
+
+        let control_type = ControlType::from(payload[0]);
+        let event = match control_type {
+            ControlType::NodeDiscoverResp => {
+                let entries = parse_discover_response(&payload[1..]);
+                MeshCoreEvent::new(
+                    EventType::DiscoverResponse,
+                    EventPayload::DiscoverResponse(entries),
+                )
+            }
+            _ => MeshCoreEvent::new(
+                EventType::ControlData,
+                EventPayload::Bytes(payload.to_vec()),
+            ),
+        };
+        Some(event)
+    }
+
     /// Handle received data
     pub async fn handle_rx(&self, data: Vec<u8>) -> Result<()> {
         if data.is_empty() {
@@ -206,16 +291,10 @@ impl MessageReader {
             }
 
             PacketType::ContactEnd => {
-                // Get last_modification_timestamp if present
-                let last_modification_timestamp = if payload.len() >= 4 {
-                    read_u32_le(payload, 0).unwrap_or(0)
-                } else {
-                    0
-                };
+                let last_modification_timestamp = parse_contact_end_timestamp(payload);
                 *self.contacts_last_modification_timestamp.write().await =
                     last_modification_timestamp;
 
-                // Emit contacts event
                 let contacts = std::mem::take(&mut *self.pending_contacts.write().await);
                 let event =
                     MeshCoreEvent::new(EventType::Contacts, EventPayload::Contacts(contacts))
@@ -241,25 +320,8 @@ impl MessageReader {
             }
 
             PacketType::Battery => {
-                if payload.len() >= 2 {
-                    let battery_mv = read_u16_le(payload, 0).unwrap_or(0);
-                    // Storage info is optional and uses u32 fields
-                    let (used_kb, total_kb) = if payload.len() >= 10 {
-                        (
-                            Some(read_u32_le(payload, 2).unwrap_or(0)),
-                            Some(read_u32_le(payload, 6).unwrap_or(0)),
-                        )
-                    } else {
-                        (None, None)
-                    };
-                    let event = MeshCoreEvent::new(
-                        EventType::Battery,
-                        EventPayload::Battery(BatteryInfo {
-                            battery_mv,
-                            used_kb,
-                            total_kb,
-                        }),
-                    );
+                if let Some(info) = parse_battery(payload) {
+                    let event = MeshCoreEvent::new(EventType::Battery, EventPayload::Battery(info));
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -274,20 +336,10 @@ impl MessageReader {
             }
 
             PacketType::MsgSent => {
-                if payload.len() >= 9 {
-                    let message_type = payload[0];
-                    let expected_ack: [u8; 4] = read_bytes(payload, 1).unwrap_or([0; 4]);
-                    let suggested_timeout = read_u32_le(payload, 5).unwrap_or(5000);
-
-                    let event = MeshCoreEvent::new(
-                        EventType::MsgSent,
-                        EventPayload::MsgSent(MsgSentInfo {
-                            message_type,
-                            expected_ack,
-                            suggested_timeout,
-                        }),
-                    )
-                    .with_attribute("tag", hex_encode(&expected_ack));
+                if let Some(info) = parse_msg_sent(payload) {
+                    let tag_hex = hex_encode(&info.expected_ack);
+                    let event = MeshCoreEvent::new(EventType::MsgSent, EventPayload::MsgSent(info))
+                        .with_attribute("tag", tag_hex);
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -359,22 +411,9 @@ impl MessageReader {
             }
 
             PacketType::ChannelInfo => {
-                // Firmware always sends CHANNEL_INFO_LEN bytes: 1 (idx) + name + secret
-                if payload.len() >= CHANNEL_INFO_LEN {
-                    let channel_idx = payload[0];
-                    let name = read_string(payload, 1, CHANNEL_NAME_LEN);
-                    let secret: [u8; CHANNEL_SECRET_LEN] =
-                        read_bytes(payload, 1 + CHANNEL_NAME_LEN)
-                            .unwrap_or([0; CHANNEL_SECRET_LEN]);
-
-                    let event = MeshCoreEvent::new(
-                        EventType::ChannelInfo,
-                        EventPayload::ChannelInfo(ChannelInfoData {
-                            channel_idx,
-                            name,
-                            secret,
-                        }),
-                    );
+                if let Some(info) = parse_channel_info(payload) {
+                    let event =
+                        MeshCoreEvent::new(EventType::ChannelInfo, EventPayload::ChannelInfo(info));
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -399,40 +438,20 @@ impl MessageReader {
             }
 
             PacketType::CustomVars => {
-                // Parse key-value pairs
-                let mut vars = HashMap::new();
-                let text = String::from_utf8_lossy(payload);
-                for line in text.lines() {
-                    if let Some((key, value)) = line.split_once('=') {
-                        vars.insert(key.to_string(), value.to_string());
-                    }
-                }
+                let vars = parse_custom_vars(payload);
                 let event =
                     MeshCoreEvent::new(EventType::CustomVars, EventPayload::CustomVars(vars));
                 self.dispatcher.emit(event).await;
             }
 
             PacketType::Stats => {
-                // Stats have a category byte followed by data
-                if !payload.is_empty() {
-                    let category = match payload[0] {
-                        0 => StatsCategory::Core,
-                        1 => StatsCategory::Radio,
-                        2 => StatsCategory::Packets,
-                        _ => StatsCategory::Core,
-                    };
-                    let event_type = match category {
+                if let Some(stats) = parse_stats(payload) {
+                    let event_type = match stats.category {
                         StatsCategory::Core => EventType::StatsCore,
                         StatsCategory::Radio => EventType::StatsRadio,
                         StatsCategory::Packets => EventType::StatsPackets,
                     };
-                    let event = MeshCoreEvent::new(
-                        event_type,
-                        EventPayload::Stats(StatsData {
-                            category,
-                            raw: payload[1..].to_vec(),
-                        }),
-                    );
+                    let event = MeshCoreEvent::new(event_type, EventPayload::Stats(stats));
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -447,51 +466,19 @@ impl MessageReader {
             }
 
             PacketType::Advertisement => {
-                if payload.len() >= 14 {
-                    let prefix: [u8; 6] = read_bytes(payload, 0).unwrap_or([0; 6]);
-                    let name = read_string(payload, 6, 32);
-                    let lat = if payload.len() >= 42 {
-                        read_i32_le(payload, 38).unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    let lon = if payload.len() >= 46 {
-                        read_i32_le(payload, 42).unwrap_or(0)
-                    } else {
-                        0
-                    };
-
+                if let Some(advert) = parse_advertisement(payload) {
                     let event = MeshCoreEvent::new(
                         EventType::Advertisement,
-                        EventPayload::Advertisement(AdvertisementData {
-                            prefix,
-                            name,
-                            lat,
-                            lon,
-                        }),
+                        EventPayload::Advertisement(advert),
                     );
                     self.dispatcher.emit(event).await;
                 }
             }
 
             PacketType::PathUpdate => {
-                if payload.len() >= 7 {
-                    let prefix: [u8; 6] = read_bytes(payload, 0).unwrap_or([0; 6]);
-                    let path_len = payload[6] as i8;
-                    let path = if payload.len() > 7 {
-                        payload[7..].to_vec()
-                    } else {
-                        Vec::new()
-                    };
-
-                    let event = MeshCoreEvent::new(
-                        EventType::PathUpdate,
-                        EventPayload::PathUpdate(PathUpdateData {
-                            prefix,
-                            path_len,
-                            path,
-                        }),
-                    );
+                if let Some(update) = parse_path_update(payload) {
+                    let event =
+                        MeshCoreEvent::new(EventType::PathUpdate, EventPayload::PathUpdate(update));
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -521,206 +508,59 @@ impl MessageReader {
             }
 
             PacketType::StatusResponse => {
-                if payload.len() >= 58 {
-                    // The first 6 bytes are the sender prefix
-                    let sender_prefix: [u8; 6] = read_bytes(payload, 0).unwrap_or([0; 6]);
-                    if let Ok(status) = parse_status(&payload[6..], sender_prefix) {
-                        let tag_hex = hex_encode(&sender_prefix);
-                        let event = MeshCoreEvent::new(
-                            EventType::StatusResponse,
-                            EventPayload::Status(status),
-                        )
-                        .with_attribute("prefix", tag_hex);
-                        self.dispatcher.emit(event).await;
-                    }
+                if let Some(frame) = parse_status_response(payload) {
+                    let prefix_hex = hex_encode(&frame.sender_prefix);
+                    let event = MeshCoreEvent::new(
+                        EventType::StatusResponse,
+                        EventPayload::Status(frame.status),
+                    )
+                    .with_attribute("prefix", prefix_hex);
+                    self.dispatcher.emit(event).await;
                 }
             }
 
             PacketType::TelemetryResponse => {
-                // The first bytes are tag, the rest is LPP data
-                if payload.len() >= 4 {
-                    let tag: [u8; 4] = read_bytes(payload, 0).unwrap_or([0; 4]);
-                    let telemetry = payload[4..].to_vec();
+                if let Some(frame) = parse_telemetry_response(payload) {
                     let event = MeshCoreEvent::new(
                         EventType::TelemetryResponse,
-                        EventPayload::Telemetry(telemetry),
+                        EventPayload::Telemetry(frame.data),
                     )
-                    .with_attribute("tag", hex_encode(&tag));
+                    .with_attribute("tag", hex_encode(&frame.tag));
                     self.dispatcher.emit(event).await;
                 }
             }
 
             PacketType::BinaryResponse => {
-                // Firmware layout: [subtype: 1][tag: 4][data...]
-                // Skip the subtype byte; tag lives at offset 1, data from offset 5.
-                // See meshcore_py reader.py:727:
-                //   dbuf.read(1); tag = dbuf.read(4).hex(); response_data = dbuf.read()
-                if payload.len() >= 5 {
-                    let tag: [u8; 4] = read_bytes(payload, 1).unwrap_or([0; 4]);
-                    let data = payload[5..].to_vec();
-
-                    // Check if we have a pending request for this tag
-                    let tag_hex = hex_encode(&tag);
+                if let Some(frame) = parse_binary_response_frame(payload) {
+                    let tag_hex = hex_encode(&frame.tag);
                     let request = self.pending_requests.write().await.remove(&tag_hex);
-
-                    if let Some(req) = request {
-                        // Emit typed event based on the request type
-                        let event = match req.request_type {
-                            BinaryReqType::Status => {
-                                if let Ok(status) = parse_status(&data, [0; 6]) {
-                                    MeshCoreEvent::new(
-                                        EventType::StatusResponse,
-                                        EventPayload::Status(status),
-                                    )
-                                } else {
-                                    MeshCoreEvent::new(
-                                        EventType::BinaryResponse,
-                                        EventPayload::BinaryResponse { tag, data },
-                                    )
-                                }
-                            }
-                            BinaryReqType::Telemetry => MeshCoreEvent::new(
-                                EventType::TelemetryResponse,
-                                EventPayload::Telemetry(data),
-                            ),
-                            BinaryReqType::Mma => {
-                                let entries = parse_mma(&data);
-                                MeshCoreEvent::new(
-                                    EventType::MmaResponse,
-                                    EventPayload::Mma(entries),
-                                )
-                            }
-                            BinaryReqType::Acl => {
-                                let entries = parse_acl(&data);
-                                MeshCoreEvent::new(
-                                    EventType::AclResponse,
-                                    EventPayload::Acl(entries),
-                                )
-                            }
-                            BinaryReqType::Neighbours => {
-                                let pk_plen = req
-                                    .context
-                                    .get("pubkey_prefix_length")
-                                    .and_then(|s| s.parse::<usize>().ok())
-                                    .unwrap_or(4);
-                                if let Ok(neighbours) = parse_neighbours(&data, pk_plen) {
-                                    MeshCoreEvent::new(
-                                        EventType::NeighboursResponse,
-                                        EventPayload::Neighbours(neighbours),
-                                    )
-                                } else {
-                                    MeshCoreEvent::new(
-                                        EventType::BinaryResponse,
-                                        EventPayload::BinaryResponse { tag, data },
-                                    )
-                                }
-                            }
-                            BinaryReqType::KeepAlive => MeshCoreEvent::new(
-                                EventType::BinaryResponse,
-                                EventPayload::BinaryResponse { tag, data },
-                            ),
-                        }
+                    let event = Self::dispatch_binary_response(frame.tag, frame.data, request)
                         .with_attribute("tag", tag_hex);
-
-                        self.dispatcher.emit(event).await;
-                    } else {
-                        // No matching request, emit generic binary response
-                        let event = MeshCoreEvent::new(
-                            EventType::BinaryResponse,
-                            EventPayload::BinaryResponse { tag, data },
-                        )
-                        .with_attribute("tag", tag_hex);
-                        self.dispatcher.emit(event).await;
-                    }
+                    self.dispatcher.emit(event).await;
                 }
             }
 
             PacketType::ControlData => {
-                if !payload.is_empty() {
-                    let control_type = ControlType::from(payload[0]);
-                    match control_type {
-                        ControlType::NodeDiscoverResp => {
-                            // Parse discover response
-                            let mut entries = Vec::new();
-                            let mut offset = 1;
-                            while offset + 38 <= payload.len() {
-                                let pubkey = payload[offset..offset + 32].to_vec();
-                                let name = read_string(payload, offset + 32, 32);
-                                entries.push(DiscoverEntry { pubkey, name });
-                                offset += 64;
-                            }
-                            let event = MeshCoreEvent::new(
-                                EventType::DiscoverResponse,
-                                EventPayload::DiscoverResponse(entries),
-                            );
-                            self.dispatcher.emit(event).await;
-                        }
-                        _ => {
-                            let event = MeshCoreEvent::new(
-                                EventType::ControlData,
-                                EventPayload::Bytes(payload.to_vec()),
-                            );
-                            self.dispatcher.emit(event).await;
-                        }
-                    }
+                if let Some(event) = Self::dispatch_control_data(payload) {
+                    self.dispatcher.emit(event).await;
                 }
             }
 
             PacketType::TraceData => {
-                // Parse trace hops
-                let mut hops = Vec::new();
-                let mut offset = 0;
-                while offset + 7 <= payload.len() {
-                    let prefix: [u8; 6] = read_bytes(payload, offset).unwrap_or([0; 6]);
-                    let snr_raw = payload[offset + 6] as i8;
-                    let snr = snr_raw as f32 / 4.0;
-                    hops.push(TraceHop { prefix, snr });
-                    offset += 7;
-                }
-                let event = MeshCoreEvent::new(
-                    EventType::TraceData,
-                    EventPayload::TraceData(TraceInfo { hops }),
-                );
+                let trace = parse_trace_data(payload);
+                let event =
+                    MeshCoreEvent::new(EventType::TraceData, EventPayload::TraceData(trace));
                 self.dispatcher.emit(event).await;
             }
 
             PacketType::AdvertResponse => {
-                if payload.len() >= 42 {
-                    let tag: [u8; 4] = read_bytes(payload, 0).unwrap_or([0; 4]);
-                    let pubkey: [u8; 32] = read_bytes(payload, 4).unwrap_or([0; 32]);
-                    let adv_type = payload[36];
-                    let node_name = read_string(payload, 37, 32);
-                    let timestamp = read_u32_le(payload, 69).unwrap_or(0);
-                    let flags = if payload.len() > 73 { payload[73] } else { 0 };
-
-                    let (lat, lon, node_desc) = if payload.len() >= 82 {
-                        let lat = Some(read_i32_le(payload, 74).unwrap_or(0));
-                        let lon = Some(read_i32_le(payload, 78).unwrap_or(0));
-                        let desc = if payload.len() > 82 {
-                            Some(read_string(payload, 82, 32))
-                        } else {
-                            None
-                        };
-                        (lat, lon, desc)
-                    } else {
-                        (None, None, None)
-                    };
-
+                if let Some(resp) = parse_advert_response(payload) {
+                    let tag_hex = hex_encode(&resp.tag);
                     let event = MeshCoreEvent::new(
                         EventType::AdvertResponse,
-                        EventPayload::AdvertResponse(AdvertResponseData {
-                            tag,
-                            pubkey,
-                            adv_type,
-                            node_name,
-                            timestamp,
-                            flags,
-                            lat,
-                            lon,
-                            node_desc,
-                        }),
+                        EventPayload::AdvertResponse(resp),
                     )
-                    .with_attribute("tag", hex_encode(&tag));
+                    .with_attribute("tag", tag_hex);
                     self.dispatcher.emit(event).await;
                 }
             }
@@ -763,6 +603,7 @@ impl MessageReader {
 mod tests {
     use super::*;
     use crate::packets::RouteType;
+    use crate::{CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
     use std::time::Duration;
 
     fn create_reader() -> (MessageReader, Arc<EventDispatcher>) {
@@ -2592,5 +2433,181 @@ mod tests {
             }
             _ => panic!("Expected LogData payload"),
         }
+    }
+
+    // ========== dispatch_binary_response tests ==========
+
+    #[test]
+    fn test_dispatch_binary_response_no_pending() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        let data = vec![0xAA, 0xBB];
+        let event = MessageReader::dispatch_binary_response(tag, data.clone(), None);
+        assert_eq!(event.event_type, EventType::BinaryResponse);
+        match event.payload {
+            EventPayload::BinaryResponse { tag: t, data: d } => {
+                assert_eq!(t, tag);
+                assert_eq!(d, data);
+            }
+            _ => panic!("Expected BinaryResponse payload"),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_telemetry() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        let data = vec![0x10, 0x20, 0x30];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Telemetry,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::TelemetryResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_keepalive() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        let data = vec![];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::KeepAlive,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::BinaryResponse);
+    }
+
+    // ========== dispatch_control_data tests ==========
+
+    #[test]
+    fn test_dispatch_control_data_empty() {
+        assert!(MessageReader::dispatch_control_data(&[]).is_none());
+    }
+
+    #[test]
+    fn test_dispatch_control_data_discover_resp() {
+        let mut data = vec![ControlType::NodeDiscoverResp as u8];
+        // Add one entry: 32-byte pubkey + 32-byte name
+        data.extend_from_slice(&[0xAA; 32]);
+        let mut name = [0u8; 32];
+        name[..4].copy_from_slice(b"Test");
+        data.extend_from_slice(&name);
+
+        let event = MessageReader::dispatch_control_data(&data).unwrap();
+        assert_eq!(event.event_type, EventType::DiscoverResponse);
+    }
+
+    #[test]
+    fn test_dispatch_control_data_other() {
+        // Unknown control type should emit ControlData
+        let data = vec![0xFF, 0x01, 0x02];
+        let event = MessageReader::dispatch_control_data(&data).unwrap();
+        assert_eq!(event.event_type, EventType::ControlData);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_status_ok() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        // Build valid status data (52 bytes minimum)
+        let data = vec![0u8; 52];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Status,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::StatusResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_status_parse_fail() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        // Too-short data for parse_status
+        let data = vec![0x01];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Status,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        // Falls back to generic BinaryResponse
+        assert_eq!(event.event_type, EventType::BinaryResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_mma() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        let data = vec![];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Mma,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::MmaResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_acl() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        let data = vec![];
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Acl,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::AclResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_neighbours_ok() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        // Build valid neighbours data: count(1) + at least one entry
+        let mut data = vec![1u8]; // count = 1
+        data.extend_from_slice(&[0xAA; 4]); // pubkey prefix (4 bytes)
+        data.push(40); // snr
+        data.push((-70i8) as u8); // rssi
+        data.extend_from_slice(&1000u32.to_le_bytes()); // last_seen
+        let mut context = HashMap::new();
+        context.insert("pubkey_prefix_length".to_string(), "4".to_string());
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Neighbours,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context,
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        assert_eq!(event.event_type, EventType::NeighboursResponse);
+    }
+
+    #[test]
+    fn test_dispatch_binary_response_neighbours_parse_fail() {
+        let tag = [0x01, 0x02, 0x03, 0x04];
+        let data = vec![]; // too short for neighbours
+        let req = BinaryRequest {
+            request_type: BinaryReqType::Neighbours,
+            pubkey_prefix: vec![],
+            expires_at: Instant::now() + Duration::from_secs(60),
+            context: HashMap::new(),
+            is_anon: false,
+        };
+        let event = MessageReader::dispatch_binary_response(tag, data, Some(req));
+        // Falls back to generic BinaryResponse
+        assert_eq!(event.event_type, EventType::BinaryResponse);
     }
 }
