@@ -2593,4 +2593,29 @@ mod tests {
         // Falls back to generic BinaryResponse
         assert_eq!(event.event_type, EventType::BinaryResponse);
     }
+
+    #[tokio::test]
+    async fn test_handle_rx_command_only_packet_types_ignored() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        // These are outbound command codes that should be silently ignored
+        // when received as inbound packets.
+        for packet_type_byte in [
+            PacketType::BinaryReq as u8,
+            PacketType::FactoryReset as u8,
+            PacketType::PathDiscovery as u8,
+            PacketType::SetFloodScope as u8,
+            PacketType::SendControlData as u8,
+        ] {
+            reader.handle_rx(vec![packet_type_byte]).await.unwrap();
+        }
+
+        // None of them should emit any event
+        let result = tokio::time::timeout(Duration::from_millis(50), receiver.recv()).await;
+        assert!(
+            result.is_err(),
+            "Command-only packet types should not emit events"
+        );
+    }
 }
