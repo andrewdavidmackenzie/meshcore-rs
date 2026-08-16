@@ -518,22 +518,16 @@ impl CommandHandler {
         data.extend_from_slice(&pubkey);
 
         // First wait for MsgSent confirmation
-        let sent = self
-            .send_with_timeout(&data, Some(EventType::MsgSent), timeout)
+        self.send_with_timeout(&data, Some(EventType::MsgSent), timeout)
             .await?;
 
         // Then wait for the PathDiscoveryResponse
-        let filters = match sent.payload {
-            EventPayload::MsgSent(ref info) => {
-                let mut f = HashMap::new();
-                f.insert("tag".to_string(), hex_encode(&info.expected_ack));
-                f
-            }
-            _ => HashMap::new(),
-        };
-
         let event = self
-            .wait_for_event(Some(EventType::PathDiscoveryResponse), filters, timeout)
+            .wait_for_event(
+                Some(EventType::PathDiscoveryResponse),
+                HashMap::new(),
+                timeout,
+            )
             .await?;
 
         match event.payload {
@@ -2188,5 +2182,73 @@ mod tests {
         assert_eq!(sent[1], 0x00); // reserved byte
         assert_eq!(&sent[2..34], &[0xAA; 32]); // 32-byte public key
         assert_eq!(sent.len(), 34); // total: 1 + 1 + 32
+    }
+
+    #[tokio::test]
+    async fn test_send_path_discovery_success() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            // Consume the sent command
+            let _sent = rx.recv().await.unwrap();
+
+            // Emit MsgSent response
+            dispatcher_clone
+                .emit(
+                    MeshCoreEvent::new(
+                        EventType::MsgSent,
+                        EventPayload::MsgSent(MsgSentInfo {
+                            message_type: 0,
+                            expected_ack: [0x01, 0x02, 0x03, 0x04],
+                            suggested_timeout: 5000,
+                        }),
+                    )
+                    .with_attribute("tag", "01020304".to_string()),
+                )
+                .await;
+
+            // Small delay then emit PathDiscoveryResponse
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            dispatcher_clone
+                .emit(
+                    MeshCoreEvent::new(
+                        EventType::PathDiscoveryResponse,
+                        EventPayload::PathDiscoveryResponse(PathDiscoveryResponseData {
+                            pubkey_prefix: [0xAA; 6],
+                            out_path_len: 1,
+                            out_path_hash_len: 1,
+                            out_path: vec![0x11],
+                            in_path_len: 0,
+                            in_path_hash_len: 1,
+                            in_path: vec![],
+                        }),
+                    )
+                    .with_attribute("prefix", "aaaaaaaaaaaa".to_string()),
+                )
+                .await;
+        });
+
+        let dest = vec![0xAAu8; 32];
+        let result = handler
+            .send_path_discovery_with_timeout(dest, Duration::from_millis(500))
+            .await;
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.pubkey_prefix, [0xAA; 6]);
+        assert_eq!(resp.out_path_len, 1);
+        assert_eq!(resp.out_path, vec![0x11]);
+    }
+
+    #[tokio::test]
+    async fn test_send_path_discovery_requires_full_key() {
+        let (handler, _rx, _dispatcher) = create_test_handler();
+
+        // 6-byte prefix should fail -- path discovery needs full 32-byte key
+        let dest: &[u8] = &[0xAA; 6];
+        let result = handler
+            .send_path_discovery_with_timeout(dest, Duration::from_millis(50))
+            .await;
+        assert!(result.is_err());
     }
 }
