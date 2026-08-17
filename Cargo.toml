@@ -43,3 +43,6 @@ name = "rf_packet_monitor"
 
 [[example]]
 name = "add_remove_contact"
+
+[[example]]
+name = "node_stats"

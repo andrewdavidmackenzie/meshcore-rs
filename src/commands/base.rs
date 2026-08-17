@@ -65,6 +65,7 @@ const CMD_FACTORY_RESET: u8 = 51;
 const CMD_PATH_DISCOVERY: u8 = 52;
 const CMD_SET_FLOOD_SCOPE: u8 = 54;
 const CMD_SEND_CONTROL_DATA: u8 = 55;
+const CMD_GET_STATS: u8 = 56;
 const CMD_SET_AUTOADD_CONFIG: u8 = 58;
 const CMD_GET_AUTOADD_CONFIG: u8 = 59;
 
@@ -677,6 +678,45 @@ impl CommandHandler {
         data.extend_from_slice(control_data);
         self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
+    }
+
+    /// Get raw device stats for one category.
+    ///
+    /// Format: [CMD_GET_STATS=56][stats_type]
+    pub async fn get_stats(&self, category: StatsCategory) -> Result<StatsData> {
+        let data = [CMD_GET_STATS, category as u8];
+        let event_type = match category {
+            StatsCategory::Core => EventType::StatsCore,
+            StatsCategory::Radio => EventType::StatsRadio,
+            StatsCategory::Packets => EventType::StatsPackets,
+        };
+        let event = self.send(&data, Some(event_type)).await?;
+
+        match event.payload {
+            EventPayload::Stats(data) => Ok(data),
+            _ => Err(Error::protocol("Unexpected response to stats query")),
+        }
+    }
+
+    /// Get core device stats (battery, uptime, error count, queue length).
+    ///
+    /// Format: [CMD_GET_STATS=56][stats_type=0]
+    pub async fn get_core_stats(&self) -> Result<CoreStatsData> {
+        self.get_stats(StatsCategory::Core).await?.as_core()
+    }
+
+    /// Get radio stats (noise floor, last RSSI/SNR, cumulative airtime).
+    ///
+    /// Format: [CMD_GET_STATS=56][stats_type=1]
+    pub async fn get_radio_stats(&self) -> Result<RadioStatsData> {
+        self.get_stats(StatsCategory::Radio).await?.as_radio()
+    }
+
+    /// Get packet counters.
+    ///
+    /// Format: [CMD_GET_STATS=56][stats_type=2]
+    pub async fn get_packet_stats(&self) -> Result<PacketStatsData> {
+        self.get_stats(StatsCategory::Packets).await?.as_packets()
     }
 
     /// Export private key
@@ -1885,6 +1925,141 @@ mod tests {
 
         let result = handler.send_control_data(&[0x01, 0x02, 0x03]).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_stats_core_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_GET_STATS, 0]); // stats_type=0 (Core)
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::StatsCore,
+                    EventPayload::Stats(StatsData {
+                        category: StatsCategory::Core,
+                        raw: vec![0xAA],
+                    }),
+                ))
+                .await;
+        });
+
+        let result = handler.get_stats(StatsCategory::Core).await;
+        assert_eq!(result.unwrap().raw, vec![0xAA]);
+    }
+
+    #[tokio::test]
+    async fn test_get_stats_unexpected_response_errors() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+            // Right EventType, wrong payload shape.
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(EventType::StatsCore, EventPayload::None))
+                .await;
+        });
+
+        let result = handler.get_stats(StatsCategory::Core).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_core_stats_wire_format_and_decoding() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_GET_STATS, 0]);
+
+            let mut raw = Vec::new();
+            raw.extend_from_slice(&4012u16.to_le_bytes());
+            raw.extend_from_slice(&123456u32.to_le_bytes());
+            raw.extend_from_slice(&0u16.to_le_bytes());
+            raw.push(0);
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::StatsCore,
+                    EventPayload::Stats(StatsData {
+                        category: StatsCategory::Core,
+                        raw,
+                    }),
+                ))
+                .await;
+        });
+
+        let stats = handler.get_core_stats().await.unwrap();
+        assert_eq!(stats.battery_mv, 4012);
+        assert_eq!(stats.uptime_secs, 123456);
+    }
+
+    #[tokio::test]
+    async fn test_get_radio_stats_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_GET_STATS, 1]); // stats_type=1 (Radio)
+
+            let mut raw = Vec::new();
+            raw.extend_from_slice(&(-100i16).to_le_bytes());
+            raw.push((-70i8) as u8);
+            raw.push(20i8 as u8); // 20 / 4.0 = 5.0 dB
+            raw.extend_from_slice(&10u32.to_le_bytes());
+            raw.extend_from_slice(&20u32.to_le_bytes());
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::StatsRadio,
+                    EventPayload::Stats(StatsData {
+                        category: StatsCategory::Radio,
+                        raw,
+                    }),
+                ))
+                .await;
+        });
+
+        let stats = handler.get_radio_stats().await.unwrap();
+        assert_eq!(stats.noise_floor, -100);
+        assert_eq!(stats.last_rssi, -70);
+        assert_eq!(stats.last_snr, 5.0);
+    }
+
+    #[tokio::test]
+    async fn test_get_packet_stats_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_GET_STATS, 2]); // stats_type=2 (Packets)
+
+            let mut raw = Vec::new();
+            for value in [1000u32, 500, 100, 400, 200, 800] {
+                raw.extend_from_slice(&value.to_le_bytes());
+            }
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::StatsPackets,
+                    EventPayload::Stats(StatsData {
+                        category: StatsCategory::Packets,
+                        raw,
+                    }),
+                ))
+                .await;
+        });
+
+        let stats = handler.get_packet_stats().await.unwrap();
+        assert_eq!(stats.recv, 1000);
+        assert_eq!(stats.recv_errors, None);
     }
 
     #[tokio::test]

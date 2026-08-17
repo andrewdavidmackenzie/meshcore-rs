@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::packets::{PayloadType, RouteType};
-use crate::CHANNEL_SECRET_LEN;
+use crate::{Error, CHANNEL_SECRET_LEN};
 
 /// Event types emitted by MeshCore
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -571,12 +571,100 @@ pub struct StatsData {
     pub raw: Vec<u8>,
 }
 
+impl StatsData {
+    /// Decodes [`Self::raw`] as [`CoreStatsData`]. Errors if
+    /// [`Self::category`] isn't [`StatsCategory::Core`] or the payload is
+    /// malformed.
+    pub fn as_core(&self) -> crate::Result<CoreStatsData> {
+        if self.category != StatsCategory::Core {
+            return Err(Error::protocol("Not a core stats payload"));
+        }
+        crate::parsing::parse_core_stats(&self.raw)
+    }
+
+    /// Decodes [`Self::raw`] as [`RadioStatsData`]. Errors if
+    /// [`Self::category`] isn't [`StatsCategory::Radio`] or the payload is
+    /// malformed.
+    pub fn as_radio(&self) -> crate::Result<RadioStatsData> {
+        if self.category != StatsCategory::Radio {
+            return Err(Error::protocol("Not a radio stats payload"));
+        }
+        crate::parsing::parse_radio_stats(&self.raw)
+    }
+
+    /// Decodes [`Self::raw`] as [`PacketStatsData`]. Errors if
+    /// [`Self::category`] isn't [`StatsCategory::Packets`] or the payload is
+    /// malformed.
+    pub fn as_packets(&self) -> crate::Result<PacketStatsData> {
+        if self.category != StatsCategory::Packets {
+            return Err(Error::protocol("Not a packets stats payload"));
+        }
+        crate::parsing::parse_packet_stats(&self.raw)
+    }
+}
+
 /// Stats category
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatsCategory {
     Core,
     Radio,
     Packets,
+}
+
+/// Core device stats (`StatsCategory::Core`) — battery, uptime, error count
+/// and outbound queue length. Field names match `meshcore_py`'s
+/// `reader.py` dict keys exactly, for MQTT/JSON compatibility with
+/// downstream tools that already consume that shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreStatsData {
+    /// Battery voltage, millivolts.
+    pub battery_mv: u16,
+    /// Device uptime, seconds.
+    pub uptime_secs: u32,
+    /// Error count/flags -- bit meanings are undocumented in the firmware
+    /// source, exposed here as an opaque value.
+    pub errors: u16,
+    /// Outbound message queue length.
+    pub queue_len: u8,
+}
+
+/// Radio stats (`StatsCategory::Radio`) — noise floor, last packet's
+/// signal quality, and cumulative airtime. Field names match
+/// `meshcore_py`'s `reader.py` dict keys exactly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RadioStatsData {
+    /// Radio noise floor, dBm.
+    pub noise_floor: i16,
+    /// RSSI of the last received packet, dBm.
+    pub last_rssi: i8,
+    /// SNR of the last received packet, dB -- already unscaled from the
+    /// firmware's ×4 wire encoding.
+    pub last_snr: f32,
+    /// Cumulative transmit airtime, seconds.
+    pub tx_air_secs: u32,
+    /// Cumulative receive airtime, seconds.
+    pub rx_air_secs: u32,
+}
+
+/// Packet counters (`StatsCategory::Packets`) — field names match
+/// `meshcore_py`'s `reader.py` dict keys exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PacketStatsData {
+    /// Total packets received.
+    pub recv: u32,
+    /// Total packets sent.
+    pub sent: u32,
+    /// Packets sent via flood routing.
+    pub flood_tx: u32,
+    /// Packets sent via direct routing.
+    pub direct_tx: u32,
+    /// Packets received via flood routing.
+    pub flood_rx: u32,
+    /// Packets received via direct routing.
+    pub direct_rx: u32,
+    /// Receive/CRC errors -- `None` on older firmware whose stats frame
+    /// doesn't report this field (26 bytes instead of 30).
+    pub recv_errors: Option<u32>,
 }
 
 /// RF log data from the device: pushed automatically for *every* packet the
@@ -1299,6 +1387,33 @@ mod tests {
     fn test_stats_category_eq() {
         assert_eq!(StatsCategory::Core, StatsCategory::Core);
         assert_ne!(StatsCategory::Core, StatsCategory::Radio);
+    }
+
+    #[test]
+    fn test_stats_data_as_core_errors_on_wrong_category() {
+        let stats = StatsData {
+            category: StatsCategory::Radio,
+            raw: Vec::new(),
+        };
+        assert!(stats.as_core().is_err());
+    }
+
+    #[test]
+    fn test_stats_data_as_radio_errors_on_wrong_category() {
+        let stats = StatsData {
+            category: StatsCategory::Packets,
+            raw: Vec::new(),
+        };
+        assert!(stats.as_radio().is_err());
+    }
+
+    #[test]
+    fn test_stats_data_as_packets_errors_on_wrong_category() {
+        let stats = StatsData {
+            category: StatsCategory::Core,
+            raw: Vec::new(),
+        };
+        assert!(stats.as_packets().is_err());
     }
 
     #[test]

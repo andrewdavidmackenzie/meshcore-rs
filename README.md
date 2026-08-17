@@ -175,6 +175,7 @@ traffic never triggers it; use `LogData` for general monitoring as above.
 - `get_autoadd_config()` - Get auto-add-contacts flags (contact-type bitmask + the table-full "overwrite oldest" bit)
 - `set_autoadd_config()` - Set auto-add-contacts flags, with an optional max-hop limit
 - `export_private_key()` / `import_private_key()` - Key management
+- `get_core_stats()` / `get_radio_stats()` / `get_packet_stats()` - Device/radio/packet counters (see `examples/node_stats.rs`)
 
 ### Contact Commands
 

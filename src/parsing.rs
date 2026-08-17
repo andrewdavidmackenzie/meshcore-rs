@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use crate::error::Error;
 use crate::events::{
     AclEntry, AdvertResponseData, AdvertisementData, BatteryInfo, ChannelInfoData, ChannelMessage,
-    Contact, ContactMessage, DeviceInfoData, DiscoverEntry, MeshPacketHeader, MmaEntry,
-    MsgSentInfo, Neighbour, NeighboursData, PathDiscoveryResponseData, PathUpdateData,
-    RawAdvertisement, SelfInfo, StatsCategory, StatsData, StatusData, TraceHop, TraceInfo,
+    Contact, ContactMessage, CoreStatsData, DeviceInfoData, DiscoverEntry, MeshPacketHeader,
+    MmaEntry, MsgSentInfo, Neighbour, NeighboursData, PacketStatsData, PathDiscoveryResponseData,
+    PathUpdateData, RadioStatsData, RawAdvertisement, SelfInfo, StatsCategory, StatsData,
+    StatusData, TraceHop, TraceInfo,
 };
 use crate::packets::{PayloadType, RouteType};
 use crate::{Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
@@ -1003,6 +1004,84 @@ pub fn parse_stats(payload: &[u8]) -> Result<StatsData> {
     Ok(StatsData {
         category,
         raw: payload[1..].to_vec(),
+    })
+}
+
+/// Length of a [`StatsCategory::Core`] payload (`raw`, i.e. after the
+/// stats-type byte): `battery_mv:u16, uptime_secs:u32, errors:u16,
+/// queue_len:u8`.
+const CORE_STATS_LEN: usize = 9;
+
+/// Parses a [`StatsCategory::Core`] payload's `raw` bytes into
+/// [`CoreStatsData`].
+pub fn parse_core_stats(data: &[u8]) -> Result<CoreStatsData> {
+    if data.len() < CORE_STATS_LEN {
+        return Err(Error::protocol("Core stats payload too short"));
+    }
+    Ok(CoreStatsData {
+        battery_mv: read_u16_le(data, 0)?,
+        uptime_secs: read_u32_le(data, 2)?,
+        errors: read_u16_le(data, 6)?,
+        queue_len: *data
+            .get(8)
+            .ok_or_else(|| Error::protocol("Core stats payload too short"))?,
+    })
+}
+
+/// Length of a [`StatsCategory::Radio`] payload (`raw`): `noise_floor:i16,
+/// last_rssi:i8, last_snr_scaled:i8, tx_air_secs:u32, rx_air_secs:u32`.
+const RADIO_STATS_LEN: usize = 12;
+
+/// Parses a [`StatsCategory::Radio`] payload's `raw` bytes into
+/// [`RadioStatsData`]. `last_snr` is unscaled from the firmware's ×4
+/// wire encoding (`last_snr_scaled as f32 / 4.0`).
+pub fn parse_radio_stats(data: &[u8]) -> Result<RadioStatsData> {
+    if data.len() < RADIO_STATS_LEN {
+        return Err(Error::protocol("Radio stats payload too short"));
+    }
+    let last_rssi = *data
+        .get(2)
+        .ok_or_else(|| Error::protocol("Radio stats payload too short"))? as i8;
+    let last_snr_scaled = *data
+        .get(3)
+        .ok_or_else(|| Error::protocol("Radio stats payload too short"))?
+        as i8;
+    Ok(RadioStatsData {
+        noise_floor: read_i16_le(data, 0)?,
+        last_rssi,
+        last_snr: last_snr_scaled as f32 / 4.0,
+        tx_air_secs: read_u32_le(data, 4)?,
+        rx_air_secs: read_u32_le(data, 8)?,
+    })
+}
+
+/// Length of a [`StatsCategory::Packets`] payload (`raw`) without the
+/// optional trailing `recv_errors:u32` (older firmware).
+const PACKET_STATS_LEN: usize = 24;
+/// Length of a [`StatsCategory::Packets`] payload (`raw`) including
+/// `recv_errors:u32` (newer firmware).
+const PACKET_STATS_LEN_WITH_ERRORS: usize = 28;
+
+/// Parses a [`StatsCategory::Packets`] payload's `raw` bytes into
+/// [`PacketStatsData`]. Accepts either the legacy 24-byte frame
+/// (`recv_errors` becomes `None`) or the newer 28-byte one.
+pub fn parse_packet_stats(data: &[u8]) -> Result<PacketStatsData> {
+    if data.len() < PACKET_STATS_LEN {
+        return Err(Error::protocol("Packet stats payload too short"));
+    }
+    let recv_errors = if data.len() >= PACKET_STATS_LEN_WITH_ERRORS {
+        Some(read_u32_le(data, 24)?)
+    } else {
+        None
+    };
+    Ok(PacketStatsData {
+        recv: read_u32_le(data, 0)?,
+        sent: read_u32_le(data, 4)?,
+        flood_tx: read_u32_le(data, 8)?,
+        direct_tx: read_u32_le(data, 12)?,
+        flood_rx: read_u32_le(data, 16)?,
+        direct_rx: read_u32_le(data, 20)?,
+        recv_errors,
     })
 }
 
@@ -2416,6 +2495,99 @@ mod tests {
         let data = [99, 0xFF];
         let stats = parse_stats(&data).unwrap();
         assert_eq!(stats.category, StatsCategory::Core);
+    }
+
+    // ========== parse_core_stats tests ==========
+
+    #[test]
+    fn test_parse_core_stats_too_short() {
+        assert!(parse_core_stats(&[]).is_err());
+        assert!(parse_core_stats(&[0; 8]).is_err()); // need 9
+    }
+
+    #[test]
+    fn test_parse_core_stats_valid() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&4012u16.to_le_bytes()); // battery_mv
+        data.extend_from_slice(&123456u32.to_le_bytes()); // uptime_secs
+        data.extend_from_slice(&7u16.to_le_bytes()); // errors
+        data.push(3); // queue_len
+
+        let stats = parse_core_stats(&data).unwrap();
+        assert_eq!(stats.battery_mv, 4012);
+        assert_eq!(stats.uptime_secs, 123456);
+        assert_eq!(stats.errors, 7);
+        assert_eq!(stats.queue_len, 3);
+    }
+
+    // ========== parse_radio_stats tests ==========
+
+    #[test]
+    fn test_parse_radio_stats_too_short() {
+        assert!(parse_radio_stats(&[]).is_err());
+        assert!(parse_radio_stats(&[0; 11]).is_err()); // need 12
+    }
+
+    #[test]
+    fn test_parse_radio_stats_valid() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-120i16).to_le_bytes()); // noise_floor
+        data.push((-80i8) as u8); // last_rssi
+        data.push((33i8) as u8); // last_snr_scaled (33 / 4.0 = 8.25 dB)
+        data.extend_from_slice(&120u32.to_le_bytes()); // tx_air_secs
+        data.extend_from_slice(&340u32.to_le_bytes()); // rx_air_secs
+
+        let stats = parse_radio_stats(&data).unwrap();
+        assert_eq!(stats.noise_floor, -120);
+        assert_eq!(stats.last_rssi, -80);
+        assert_eq!(stats.last_snr, 8.25);
+        assert_eq!(stats.tx_air_secs, 120);
+        assert_eq!(stats.rx_air_secs, 340);
+    }
+
+    // ========== parse_packet_stats tests ==========
+
+    #[test]
+    fn test_parse_packet_stats_too_short() {
+        assert!(parse_packet_stats(&[]).is_err());
+        assert!(parse_packet_stats(&[0; 23]).is_err()); // need at least 24
+    }
+
+    #[test]
+    fn test_parse_packet_stats_legacy_26_byte_frame_has_no_recv_errors() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1000u32.to_le_bytes()); // recv
+        data.extend_from_slice(&500u32.to_le_bytes()); // sent
+        data.extend_from_slice(&100u32.to_le_bytes()); // flood_tx
+        data.extend_from_slice(&400u32.to_le_bytes()); // direct_tx
+        data.extend_from_slice(&200u32.to_le_bytes()); // flood_rx
+        data.extend_from_slice(&800u32.to_le_bytes()); // direct_rx
+        assert_eq!(data.len(), 24);
+
+        let stats = parse_packet_stats(&data).unwrap();
+        assert_eq!(stats.recv, 1000);
+        assert_eq!(stats.sent, 500);
+        assert_eq!(stats.flood_tx, 100);
+        assert_eq!(stats.direct_tx, 400);
+        assert_eq!(stats.flood_rx, 200);
+        assert_eq!(stats.direct_rx, 800);
+        assert_eq!(stats.recv_errors, None);
+    }
+
+    #[test]
+    fn test_parse_packet_stats_30_byte_frame_has_recv_errors() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1000u32.to_le_bytes());
+        data.extend_from_slice(&500u32.to_le_bytes());
+        data.extend_from_slice(&100u32.to_le_bytes());
+        data.extend_from_slice(&400u32.to_le_bytes());
+        data.extend_from_slice(&200u32.to_le_bytes());
+        data.extend_from_slice(&800u32.to_le_bytes());
+        data.extend_from_slice(&5u32.to_le_bytes()); // recv_errors
+        assert_eq!(data.len(), 28);
+
+        let stats = parse_packet_stats(&data).unwrap();
+        assert_eq!(stats.recv_errors, Some(5));
     }
 
     // ========== parse_advertisement tests ==========
