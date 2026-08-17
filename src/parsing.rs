@@ -998,7 +998,7 @@ pub fn parse_stats(payload: &[u8]) -> Result<StatsData> {
         0 => StatsCategory::Core,
         1 => StatsCategory::Radio,
         2 => StatsCategory::Packets,
-        _ => StatsCategory::Core,
+        _ => return Err(Error::protocol("Unknown stats category")),
     };
 
     Ok(StatsData {
@@ -2491,10 +2491,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_stats_unknown_defaults_to_core() {
+    fn test_parse_stats_unknown_category_errors() {
         let data = [99, 0xFF];
-        let stats = parse_stats(&data).unwrap();
-        assert_eq!(stats.category, StatsCategory::Core);
+        assert!(parse_stats(&data).is_err());
     }
 
     // ========== parse_core_stats tests ==========
