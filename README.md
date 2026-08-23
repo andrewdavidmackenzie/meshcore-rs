@@ -172,6 +172,7 @@ traffic never triggers it; use `LogData` for general monitoring as above.
 - `set_tx_power()` - Set transmission power
 - `send_advert()` - Send advertisement
 - `get_channel()` / `set_channel()` - Get/set channel config
+- `get_autoadd_config()` / `set_autoadd_config()` - Get/set auto-add-contacts configuration (contact-type bitmask + max hops)
 - `export_private_key()` / `import_private_key()` - Key management
 
 ### Contact Commands
@@ -235,10 +236,6 @@ assumed).
 | 63 (0x3F) | `SET_DEFAULT_FLOOD_SCOPE` | Default flood-scope (region) applied when none is given | companion-v1.15.0 | ✅ `set_default_flood_scope()` |
 | 64 (0x40) | `GET_DEFAULT_FLOOD_SCOPE` | Read the currently configured default flood-scope | companion-v1.15.0 | ✅ `get_default_flood_scope()` |
 | 65 (0x41) | `SEND_RAW_PACKET` | Inject a raw, fully-formed mesh packet directly onto the radio | companion-v1.16.0 | ❌ not found in `meshcore_py` either |
-
-`get_autoadd_config()`/`set_autoadd_config()` (58/59, implemented in this PR) are also in
-`meshcore_py` (`contact.py`, `get_autoadd_config()`/`set_autoadd_config()`), since companion-v1.12.0
-(`FIRMWARE_VER_CODE` 8) — not present on older firmware.
 
 ## Protocol Details
 

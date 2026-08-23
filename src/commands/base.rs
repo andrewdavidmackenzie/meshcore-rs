@@ -498,13 +498,36 @@ impl CommandHandler {
     /// [`crate::AUTO_ADD_OVERWRITE_OLDEST`], which isn't a contact type but
     /// controls table-full behavior); 0 means disabled for every type.
     ///
+    /// Introduced in companion firmware `companion-v1.12.0`
+    /// (`FIRMWARE_VER_CODE` 8, from [`SelfInfo::fw_version_code`] after
+    /// [`CommandHandler::send_appstart`]). On older firmware the command
+    /// byte is unrecognized and the node replies with an error frame
+    /// (`ERR_CODE_UNSUPPORTED_CMD`), surfaced here as `Err(Error::Device(_))`
+    /// rather than a timeout.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example(handler: meshcore_rs::commands::CommandHandler) -> meshcore_rs::Result<()> {
+    /// let flags = handler.get_autoadd_config().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// Format: [CMD_GET_AUTOADD_CONFIG=59]
     pub async fn get_autoadd_config(&self) -> Result<u8> {
         let data = [CMD_GET_AUTOADD_CONFIG];
-        let event = self.send(&data, Some(EventType::AutoAddConfig)).await?;
+        let event = self
+            .send_multi(
+                &data,
+                &[EventType::AutoAddConfig, EventType::Error],
+                self.default_timeout,
+            )
+            .await?;
 
         match event.payload {
             EventPayload::AutoAddConfig { flags } => Ok(flags),
+            EventPayload::String(msg) => Err(Error::device(msg)),
             _ => Err(Error::protocol(
                 "Unexpected response to auto-add config query",
             )),
@@ -517,6 +540,13 @@ impl CommandHandler {
     /// for every contact type. `max_hops`, if given, caps the hop count
     /// eligible for auto-adding; omitted, the firmware leaves its current
     /// value untouched.
+    ///
+    /// Introduced in companion firmware `companion-v1.12.0`
+    /// (`FIRMWARE_VER_CODE` 8, from [`SelfInfo::fw_version_code`] after
+    /// [`CommandHandler::send_appstart`]). On older firmware the command
+    /// byte is unrecognized and the node replies with an error frame
+    /// (`ERR_CODE_UNSUPPORTED_CMD`), surfaced here as `Err(Error::Device(_))`
+    /// rather than a timeout.
     ///
     /// # Example
     ///
@@ -541,7 +571,20 @@ impl CommandHandler {
         if let Some(max_hops) = max_hops {
             data.push(max_hops);
         }
-        self.send(&data, Some(EventType::Ok)).await?;
+        let event = self
+            .send_multi(
+                &data,
+                &[EventType::Ok, EventType::Error],
+                self.default_timeout,
+            )
+            .await?;
+
+        if event.event_type == EventType::Error {
+            return match event.payload {
+                EventPayload::String(msg) => Err(Error::device(msg)),
+                _ => Err(Error::device("Unknown error")),
+            };
+        }
         Ok(())
     }
 
@@ -2087,6 +2130,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_autoadd_config_errors_on_unsupported_command() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+
+            // Firmware older than companion-v1.12.0 doesn't recognize
+            // CMD_GET_AUTOADD_CONFIG and replies with an error frame
+            // (ERR_CODE_UNSUPPORTED_CMD) instead of AutoAddConfig.
+            dispatcher_clone
+                .emit(MeshCoreEvent::error("Unsupported command"))
+                .await;
+        });
+
+        let result = handler.get_autoadd_config().await;
+        assert!(matches!(result, Err(Error::Device(_))));
+    }
+
+    #[tokio::test]
     async fn test_set_autoadd_config_without_max_hops_wire_format() {
         let (handler, mut rx, dispatcher) = create_test_handler();
 
@@ -2124,6 +2187,26 @@ mod tests {
 
         let result = handler.set_autoadd_config(config, Some(5)).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_autoadd_config_errors_on_unsupported_command() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+
+            // Firmware older than companion-v1.12.0 doesn't recognize
+            // CMD_SET_AUTOADD_CONFIG and replies with an error frame
+            // (ERR_CODE_UNSUPPORTED_CMD) instead of Ok.
+            dispatcher_clone
+                .emit(MeshCoreEvent::error("Unsupported command"))
+                .await;
+        });
+
+        let result = handler.set_autoadd_config(0, None).await;
+        assert!(matches!(result, Err(Error::Device(_))));
     }
 
     #[tokio::test]
