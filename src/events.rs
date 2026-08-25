@@ -576,30 +576,54 @@ impl StatsData {
     /// [`Self::category`] isn't [`StatsCategory::Core`] or the payload is
     /// malformed.
     pub fn as_core(&self) -> crate::Result<CoreStatsData> {
-        if self.category != StatsCategory::Core {
-            return Err(Error::protocol("Not a core stats payload"));
-        }
-        crate::parsing::parse_core_stats(&self.raw)
+        self.try_into()
     }
 
     /// Decodes [`Self::raw`] as [`RadioStatsData`]. Errors if
     /// [`Self::category`] isn't [`StatsCategory::Radio`] or the payload is
     /// malformed.
     pub fn as_radio(&self) -> crate::Result<RadioStatsData> {
-        if self.category != StatsCategory::Radio {
-            return Err(Error::protocol("Not a radio stats payload"));
-        }
-        crate::parsing::parse_radio_stats(&self.raw)
+        self.try_into()
     }
 
     /// Decodes [`Self::raw`] as [`PacketStatsData`]. Errors if
     /// [`Self::category`] isn't [`StatsCategory::Packets`] or the payload is
     /// malformed.
     pub fn as_packets(&self) -> crate::Result<PacketStatsData> {
-        if self.category != StatsCategory::Packets {
+        self.try_into()
+    }
+}
+
+impl TryFrom<&StatsData> for CoreStatsData {
+    type Error = Error;
+
+    fn try_from(stats: &StatsData) -> crate::Result<Self> {
+        if stats.category != StatsCategory::Core {
+            return Err(Error::protocol("Not a core stats payload"));
+        }
+        crate::parsing::parse_core_stats(&stats.raw)
+    }
+}
+
+impl TryFrom<&StatsData> for RadioStatsData {
+    type Error = Error;
+
+    fn try_from(stats: &StatsData) -> crate::Result<Self> {
+        if stats.category != StatsCategory::Radio {
+            return Err(Error::protocol("Not a radio stats payload"));
+        }
+        crate::parsing::parse_radio_stats(&stats.raw)
+    }
+}
+
+impl TryFrom<&StatsData> for PacketStatsData {
+    type Error = Error;
+
+    fn try_from(stats: &StatsData) -> crate::Result<Self> {
+        if stats.category != StatsCategory::Packets {
             return Err(Error::protocol("Not a packets stats payload"));
         }
-        crate::parsing::parse_packet_stats(&self.raw)
+        crate::parsing::parse_packet_stats(&stats.raw)
     }
 }
 

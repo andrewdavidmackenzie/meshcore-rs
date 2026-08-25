@@ -1007,10 +1007,19 @@ pub fn parse_stats(payload: &[u8]) -> Result<StatsData> {
     })
 }
 
+const CORE_BATTERY_MV_LEN: usize = 2;
+const CORE_UPTIME_SECS_LEN: usize = 4;
+const CORE_ERRORS_LEN: usize = 2;
+const CORE_QUEUE_LEN_LEN: usize = 1;
+
+const CORE_BATTERY_MV_OFFSET: usize = 0;
+const CORE_UPTIME_SECS_OFFSET: usize = CORE_BATTERY_MV_OFFSET + CORE_BATTERY_MV_LEN;
+const CORE_ERRORS_OFFSET: usize = CORE_UPTIME_SECS_OFFSET + CORE_UPTIME_SECS_LEN;
+const CORE_QUEUE_LEN_OFFSET: usize = CORE_ERRORS_OFFSET + CORE_ERRORS_LEN;
 /// Length of a [`StatsCategory::Core`] payload (`raw`, i.e. after the
 /// stats-type byte): `battery_mv:u16, uptime_secs:u32, errors:u16,
 /// queue_len:u8`.
-const CORE_STATS_LEN: usize = 9;
+const CORE_STATS_LEN: usize = CORE_QUEUE_LEN_OFFSET + CORE_QUEUE_LEN_LEN;
 
 /// Parses a [`StatsCategory::Core`] payload's `raw` bytes into
 /// [`CoreStatsData`].
@@ -1019,18 +1028,29 @@ pub fn parse_core_stats(data: &[u8]) -> Result<CoreStatsData> {
         return Err(Error::protocol("Core stats payload too short"));
     }
     Ok(CoreStatsData {
-        battery_mv: read_u16_le(data, 0)?,
-        uptime_secs: read_u32_le(data, 2)?,
-        errors: read_u16_le(data, 6)?,
+        battery_mv: read_u16_le(data, CORE_BATTERY_MV_OFFSET)?,
+        uptime_secs: read_u32_le(data, CORE_UPTIME_SECS_OFFSET)?,
+        errors: read_u16_le(data, CORE_ERRORS_OFFSET)?,
         queue_len: *data
-            .get(8)
+            .get(CORE_QUEUE_LEN_OFFSET)
             .ok_or_else(|| Error::protocol("Core stats payload too short"))?,
     })
 }
 
+const RADIO_NOISE_FLOOR_LEN: usize = 2;
+const RADIO_LAST_RSSI_LEN: usize = 1;
+const RADIO_LAST_SNR_LEN: usize = 1;
+const RADIO_TX_AIR_SECS_LEN: usize = 4;
+const RADIO_RX_AIR_SECS_LEN: usize = 4;
+
+const RADIO_NOISE_FLOOR_OFFSET: usize = 0;
+const RADIO_LAST_RSSI_OFFSET: usize = RADIO_NOISE_FLOOR_OFFSET + RADIO_NOISE_FLOOR_LEN;
+const RADIO_LAST_SNR_OFFSET: usize = RADIO_LAST_RSSI_OFFSET + RADIO_LAST_RSSI_LEN;
+const RADIO_TX_AIR_SECS_OFFSET: usize = RADIO_LAST_SNR_OFFSET + RADIO_LAST_SNR_LEN;
+const RADIO_RX_AIR_SECS_OFFSET: usize = RADIO_TX_AIR_SECS_OFFSET + RADIO_TX_AIR_SECS_LEN;
 /// Length of a [`StatsCategory::Radio`] payload (`raw`): `noise_floor:i16,
 /// last_rssi:i8, last_snr_scaled:i8, tx_air_secs:u32, rx_air_secs:u32`.
-const RADIO_STATS_LEN: usize = 12;
+const RADIO_STATS_LEN: usize = RADIO_RX_AIR_SECS_OFFSET + RADIO_RX_AIR_SECS_LEN;
 
 /// Parses a [`StatsCategory::Radio`] payload's `raw` bytes into
 /// [`RadioStatsData`]. `last_snr` is unscaled from the firmware's ×4
@@ -1040,27 +1060,37 @@ pub fn parse_radio_stats(data: &[u8]) -> Result<RadioStatsData> {
         return Err(Error::protocol("Radio stats payload too short"));
     }
     let last_rssi = *data
-        .get(2)
+        .get(RADIO_LAST_RSSI_OFFSET)
         .ok_or_else(|| Error::protocol("Radio stats payload too short"))? as i8;
     let last_snr_scaled = *data
-        .get(3)
+        .get(RADIO_LAST_SNR_OFFSET)
         .ok_or_else(|| Error::protocol("Radio stats payload too short"))?
         as i8;
     Ok(RadioStatsData {
-        noise_floor: read_i16_le(data, 0)?,
+        noise_floor: read_i16_le(data, RADIO_NOISE_FLOOR_OFFSET)?,
         last_rssi,
         last_snr: last_snr_scaled as f32 / 4.0,
-        tx_air_secs: read_u32_le(data, 4)?,
-        rx_air_secs: read_u32_le(data, 8)?,
+        tx_air_secs: read_u32_le(data, RADIO_TX_AIR_SECS_OFFSET)?,
+        rx_air_secs: read_u32_le(data, RADIO_RX_AIR_SECS_OFFSET)?,
     })
 }
 
+/// Byte length of every [`StatsCategory::Packets`] field -- they're all `u32`.
+const PACKET_FIELD_LEN: usize = 4;
+
+const PACKET_RECV_OFFSET: usize = 0;
+const PACKET_SENT_OFFSET: usize = PACKET_RECV_OFFSET + PACKET_FIELD_LEN;
+const PACKET_FLOOD_TX_OFFSET: usize = PACKET_SENT_OFFSET + PACKET_FIELD_LEN;
+const PACKET_DIRECT_TX_OFFSET: usize = PACKET_FLOOD_TX_OFFSET + PACKET_FIELD_LEN;
+const PACKET_FLOOD_RX_OFFSET: usize = PACKET_DIRECT_TX_OFFSET + PACKET_FIELD_LEN;
+const PACKET_DIRECT_RX_OFFSET: usize = PACKET_FLOOD_RX_OFFSET + PACKET_FIELD_LEN;
 /// Length of a [`StatsCategory::Packets`] payload (`raw`) without the
 /// optional trailing `recv_errors:u32` (older firmware).
-const PACKET_STATS_LEN: usize = 24;
+const PACKET_STATS_LEN: usize = PACKET_DIRECT_RX_OFFSET + PACKET_FIELD_LEN;
+const PACKET_RECV_ERRORS_OFFSET: usize = PACKET_STATS_LEN;
 /// Length of a [`StatsCategory::Packets`] payload (`raw`) including
 /// `recv_errors:u32` (newer firmware).
-const PACKET_STATS_LEN_WITH_ERRORS: usize = 28;
+const PACKET_STATS_LEN_WITH_ERRORS: usize = PACKET_RECV_ERRORS_OFFSET + PACKET_FIELD_LEN;
 
 /// Parses a [`StatsCategory::Packets`] payload's `raw` bytes into
 /// [`PacketStatsData`]. Accepts either the legacy 24-byte frame
@@ -1070,17 +1100,17 @@ pub fn parse_packet_stats(data: &[u8]) -> Result<PacketStatsData> {
         return Err(Error::protocol("Packet stats payload too short"));
     }
     let recv_errors = if data.len() >= PACKET_STATS_LEN_WITH_ERRORS {
-        Some(read_u32_le(data, 24)?)
+        Some(read_u32_le(data, PACKET_RECV_ERRORS_OFFSET)?)
     } else {
         None
     };
     Ok(PacketStatsData {
-        recv: read_u32_le(data, 0)?,
-        sent: read_u32_le(data, 4)?,
-        flood_tx: read_u32_le(data, 8)?,
-        direct_tx: read_u32_le(data, 12)?,
-        flood_rx: read_u32_le(data, 16)?,
-        direct_rx: read_u32_le(data, 20)?,
+        recv: read_u32_le(data, PACKET_RECV_OFFSET)?,
+        sent: read_u32_le(data, PACKET_SENT_OFFSET)?,
+        flood_tx: read_u32_le(data, PACKET_FLOOD_TX_OFFSET)?,
+        direct_tx: read_u32_le(data, PACKET_DIRECT_TX_OFFSET)?,
+        flood_rx: read_u32_le(data, PACKET_FLOOD_RX_OFFSET)?,
+        direct_rx: read_u32_le(data, PACKET_DIRECT_RX_OFFSET)?,
         recv_errors,
     })
 }
@@ -2493,15 +2523,27 @@ mod tests {
     #[test]
     fn test_parse_stats_unknown_category_errors() {
         let data = [99, 0xFF];
-        assert!(parse_stats(&data).is_err());
+        assert!(matches!(parse_stats(&data), Err(Error::Protocol(_))));
     }
 
     // ========== parse_core_stats tests ==========
 
     #[test]
     fn test_parse_core_stats_too_short() {
-        assert!(parse_core_stats(&[]).is_err());
-        assert!(parse_core_stats(&[0; 8]).is_err()); // need 9
+        assert!(matches!(parse_core_stats(&[]), Err(Error::Protocol(_))));
+        assert!(matches!(
+            parse_core_stats(&[0; 8]), // need 9
+            Err(Error::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn test_core_stats_offset_constants() {
+        assert_eq!(CORE_BATTERY_MV_OFFSET, 0);
+        assert_eq!(CORE_UPTIME_SECS_OFFSET, 2);
+        assert_eq!(CORE_ERRORS_OFFSET, 6);
+        assert_eq!(CORE_QUEUE_LEN_OFFSET, 8);
+        assert_eq!(CORE_STATS_LEN, 9);
     }
 
     #[test]
@@ -2523,8 +2565,21 @@ mod tests {
 
     #[test]
     fn test_parse_radio_stats_too_short() {
-        assert!(parse_radio_stats(&[]).is_err());
-        assert!(parse_radio_stats(&[0; 11]).is_err()); // need 12
+        assert!(matches!(parse_radio_stats(&[]), Err(Error::Protocol(_))));
+        assert!(matches!(
+            parse_radio_stats(&[0; 11]), // need 12
+            Err(Error::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn test_radio_stats_offset_constants() {
+        assert_eq!(RADIO_NOISE_FLOOR_OFFSET, 0);
+        assert_eq!(RADIO_LAST_RSSI_OFFSET, 2);
+        assert_eq!(RADIO_LAST_SNR_OFFSET, 3);
+        assert_eq!(RADIO_TX_AIR_SECS_OFFSET, 4);
+        assert_eq!(RADIO_RX_AIR_SECS_OFFSET, 8);
+        assert_eq!(RADIO_STATS_LEN, 12);
     }
 
     #[test]
@@ -2548,8 +2603,24 @@ mod tests {
 
     #[test]
     fn test_parse_packet_stats_too_short() {
-        assert!(parse_packet_stats(&[]).is_err());
-        assert!(parse_packet_stats(&[0; 23]).is_err()); // need at least 24
+        assert!(matches!(parse_packet_stats(&[]), Err(Error::Protocol(_))));
+        assert!(matches!(
+            parse_packet_stats(&[0; 23]), // need at least 24
+            Err(Error::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn test_packet_stats_offset_constants() {
+        assert_eq!(PACKET_RECV_OFFSET, 0);
+        assert_eq!(PACKET_SENT_OFFSET, 4);
+        assert_eq!(PACKET_FLOOD_TX_OFFSET, 8);
+        assert_eq!(PACKET_DIRECT_TX_OFFSET, 12);
+        assert_eq!(PACKET_FLOOD_RX_OFFSET, 16);
+        assert_eq!(PACKET_DIRECT_RX_OFFSET, 20);
+        assert_eq!(PACKET_STATS_LEN, 24);
+        assert_eq!(PACKET_RECV_ERRORS_OFFSET, 24);
+        assert_eq!(PACKET_STATS_LEN_WITH_ERRORS, 28);
     }
 
     #[test]
