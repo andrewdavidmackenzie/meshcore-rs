@@ -2228,6 +2228,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_set_autoadd_config_errors_on_malformed_error_payload() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+
+            // Right EventType, wrong payload shape -- shouldn't happen via
+            // the real reader (type and payload are always constructed
+            // together), but exercises the defensive fallback arm.
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(EventType::Error, EventPayload::None))
+                .await;
+        });
+
+        let result = handler.set_autoadd_config(0, None).await;
+        assert!(matches!(result, Err(Error::Device(_))));
+    }
+
+    #[tokio::test]
     async fn test_sign_start_success() {
         let (handler, mut rx, dispatcher) = create_test_handler();
 
