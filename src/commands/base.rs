@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::events::*;
 use crate::packets::BinaryReqType;
@@ -215,15 +215,20 @@ impl CommandHandler {
         expected_event: Option<EventType>,
         timeout: Duration,
     ) -> Result<MeshCoreEvent> {
-        // Send the data
+        // Subscribe before sending -- otherwise a response that arrives between the send
+        // and subscribing would be missed (broadcast receivers only see events sent after
+        // they subscribe).
+        let mut rx = self.dispatcher.receiver();
+
         self.sender
             .send(data.to_vec())
             .await
             .map_err(|e| Error::Channel(e.to_string()))?;
 
-        // Wait for response
-        self.wait_for_event(expected_event, HashMap::new(), timeout)
+        self.dispatcher
+            .wait_for_event_on(&mut rx, expected_event, HashMap::new(), timeout)
             .await
+            .ok_or_else(|| Error::timeout(format!("{:?}", expected_event)))
     }
 
     /// Send raw data and wait for one of multiple response types
@@ -233,14 +238,15 @@ impl CommandHandler {
         expected_events: &[EventType],
         timeout: Duration,
     ) -> Result<MeshCoreEvent> {
-        // Send the data
+        // Subscribe before sending -- see send_with_timeout.
+        let mut rx = self.dispatcher.receiver();
+
         self.sender
             .send(data.to_vec())
             .await
             .map_err(|e| Error::Channel(e.to_string()))?;
 
-        // Wait for any of the expected events
-        self.wait_for_any_event(expected_events, timeout).await
+        Self::wait_for_any_event_on(&mut rx, expected_events, timeout).await
     }
 
     /// Wait for a specific event
@@ -263,7 +269,19 @@ impl CommandHandler {
         timeout: Duration,
     ) -> Result<MeshCoreEvent> {
         let mut rx = self.dispatcher.receiver();
+        Self::wait_for_any_event_on(&mut rx, event_types, timeout).await
+    }
 
+    /// Wait for any of the specified events on an already-subscribed receiver.
+    ///
+    /// Callers that both trigger a response and then wait for it should subscribe with
+    /// [`EventDispatcher::receiver`] *before* triggering it, then wait here -- see
+    /// [`EventDispatcher::wait_for_event_on`] for why.
+    async fn wait_for_any_event_on(
+        rx: &mut broadcast::Receiver<MeshCoreEvent>,
+        event_types: &[EventType],
+        timeout: Duration,
+    ) -> Result<MeshCoreEvent> {
         tokio::select! {
             _ = tokio::time::sleep(timeout) => {
                 Err(Error::timeout("response"))
@@ -499,8 +517,8 @@ impl CommandHandler {
     /// controls table-full behavior); 0 means disabled for every type.
     ///
     /// Introduced in companion firmware `companion-v1.12.0`
-    /// (`FIRMWARE_VER_CODE` 8, from [`SelfInfo::fw_version_code`] after
-    /// [`CommandHandler::send_appstart`]). On older firmware the command
+    /// (`FIRMWARE_VER_CODE` 8, from [`DeviceInfoData::fw_version_code`] after
+    /// [`CommandHandler::send_device_query`]). On older firmware the command
     /// byte is unrecognized and the node replies with an error frame
     /// (`ERR_CODE_UNSUPPORTED_CMD`), surfaced here as `Err(Error::Device(_))`
     /// rather than a timeout.
@@ -542,8 +560,8 @@ impl CommandHandler {
     /// value untouched.
     ///
     /// Introduced in companion firmware `companion-v1.12.0`
-    /// (`FIRMWARE_VER_CODE` 8, from [`SelfInfo::fw_version_code`] after
-    /// [`CommandHandler::send_appstart`]). On older firmware the command
+    /// (`FIRMWARE_VER_CODE` 8, from [`DeviceInfoData::fw_version_code`] after
+    /// [`CommandHandler::send_device_query`]). On older firmware the command
     /// byte is unrecognized and the node replies with an error frame
     /// (`ERR_CODE_UNSUPPORTED_CMD`), surfaced here as `Err(Error::Device(_))`
     /// rather than a timeout.

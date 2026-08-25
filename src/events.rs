@@ -822,7 +822,23 @@ impl EventDispatcher {
         timeout: std::time::Duration,
     ) -> Option<MeshCoreEvent> {
         let mut rx = self.broadcast_tx.subscribe();
+        self.wait_for_event_on(&mut rx, event_type, filters, timeout)
+            .await
+    }
 
+    /// Wait for a specific event type on an already-subscribed receiver.
+    ///
+    /// Callers that both trigger a response (e.g. by sending a command) and then wait
+    /// for it should subscribe with [`Self::receiver`] *before* triggering it, then wait
+    /// here -- otherwise a response emitted between subscribing and waiting is missed,
+    /// since `broadcast` receivers only see events sent after they subscribe.
+    pub async fn wait_for_event_on(
+        &self,
+        rx: &mut broadcast::Receiver<MeshCoreEvent>,
+        event_type: Option<EventType>,
+        filters: HashMap<String, String>,
+        timeout: std::time::Duration,
+    ) -> Option<MeshCoreEvent> {
         tokio::select! {
             _ = tokio::time::sleep(timeout) => None,
             result = async {
@@ -1064,6 +1080,31 @@ mod tests {
             .unwrap();
 
         assert_eq!(received.event_type, EventType::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_event_on_receives_event_emitted_before_wait_starts() {
+        // A broadcast receiver buffers events sent after it subscribes, even before
+        // anyone starts polling it with recv()/wait_for_event_on. This is the invariant
+        // CommandHandler::send_with_timeout/send_multi rely on by subscribing before
+        // sending the command that triggers the response: as long as subscribing happens
+        // before the command is sent, an immediate response can never be missed, no
+        // matter how much later wait_for_event_on is actually called.
+        let dispatcher = EventDispatcher::new();
+        let mut rx = dispatcher.receiver();
+
+        dispatcher.emit(MeshCoreEvent::ok()).await;
+
+        let result = dispatcher
+            .wait_for_event_on(
+                &mut rx,
+                Some(EventType::Ok),
+                HashMap::new(),
+                Duration::from_millis(100),
+            )
+            .await;
+
+        assert_eq!(result.unwrap().event_type, EventType::Ok);
     }
 
     #[tokio::test]

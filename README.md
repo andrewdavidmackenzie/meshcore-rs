@@ -172,7 +172,8 @@ traffic never triggers it; use `LogData` for general monitoring as above.
 - `set_tx_power()` - Set transmission power
 - `send_advert()` - Send advertisement
 - `get_channel()` / `set_channel()` - Get/set channel config
-- `get_autoadd_config()` / `set_autoadd_config()` - Get/set auto-add-contacts configuration (contact-type bitmask + max hops)
+- `get_autoadd_config()` - Get auto-add-contacts flags (contact-type bitmask + the table-full "overwrite oldest" bit)
+- `set_autoadd_config()` - Set auto-add-contacts flags, with an optional max-hop limit
 - `export_private_key()` / `import_private_key()` - Key management
 
 ### Contact Commands
