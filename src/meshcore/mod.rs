@@ -1143,13 +1143,10 @@ mod tests {
         let connected = Arc::new(RwLock::new(true));
 
         // Two consecutive frames: Ok (0x00) then Error (0x01) with message
-        let mut data = Vec::new();
-        // Frame 1: Ok
-        data.push(FRAME_START);
-        data.push(0x01); // length low
-        data.push(0x00); // length high
-        data.push(0x00); // PacketType::Ok
-                         // Frame 2: Error with message
+        let mut data = vec![FRAME_START, 0x01, 0x00, 0x00];
+        // Frame 1: Start, length low, length high, PacketType::Ok
+
+        // Frame 2: Error with message
         let err_payload = vec![0x01, b'f', b'a', b'i', b'l']; // 0x01 = PacketType::Error
         data.push(FRAME_START);
         data.push(err_payload.len() as u8);
