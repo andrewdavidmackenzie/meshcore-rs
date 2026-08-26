@@ -545,6 +545,8 @@ impl CommandHandler {
 
         match event.payload {
             EventPayload::AutoAddConfig { flags } => Ok(flags),
+            // e.g. the unsupported-command error frame on firmware older than
+            // companion-v1.12.0 (see doc comment above).
             EventPayload::String(msg) => Err(Error::device(msg)),
             _ => Err(Error::protocol(
                 "Unexpected response to auto-add config query",
@@ -2164,7 +2166,10 @@ mod tests {
         });
 
         let result = handler.get_autoadd_config().await;
-        assert!(matches!(result, Err(Error::Device(_))));
+        match result {
+            Err(Error::Device(msg)) => assert_eq!(msg, "Unsupported command"),
+            other => panic!("expected Err(Error::Device(\"Unsupported command\")), got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -2224,7 +2229,10 @@ mod tests {
         });
 
         let result = handler.set_autoadd_config(0, None).await;
-        assert!(matches!(result, Err(Error::Device(_))));
+        match result {
+            Err(Error::Device(msg)) => assert_eq!(msg, "Unsupported command"),
+            other => panic!("expected Err(Error::Device(\"Unsupported command\")), got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -2244,7 +2252,10 @@ mod tests {
         });
 
         let result = handler.set_autoadd_config(0, None).await;
-        assert!(matches!(result, Err(Error::Device(_))));
+        match result {
+            Err(Error::Device(msg)) => assert_eq!(msg, "Unknown error"),
+            other => panic!("expected Err(Error::Device(\"Unknown error\")), got {other:?}"),
+        }
     }
 
     #[tokio::test]
