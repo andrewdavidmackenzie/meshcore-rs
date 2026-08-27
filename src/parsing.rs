@@ -1094,9 +1094,13 @@ const PACKET_STATS_LEN_WITH_ERRORS: usize = PACKET_RECV_ERRORS_OFFSET + PACKET_F
 
 /// Parses a [`StatsCategory::Packets`] payload's `raw` bytes into
 /// [`PacketStatsData`]. Accepts either the legacy 24-byte frame
-/// (`recv_errors` becomes `None`) or the newer 28-byte one.
+/// (`recv_errors` becomes `None`) or the newer 28-byte one. Rejects lengths
+/// in between as a truncated `recv_errors` field rather than silently
+/// treating them as a legacy frame.
 pub fn parse_packet_stats(data: &[u8]) -> Result<PacketStatsData> {
-    if data.len() < PACKET_STATS_LEN {
+    if data.len() < PACKET_STATS_LEN
+        || (data.len() > PACKET_STATS_LEN && data.len() < PACKET_STATS_LEN_WITH_ERRORS)
+    {
         return Err(Error::protocol("Packet stats payload too short"));
     }
     let recv_errors = if data.len() >= PACKET_STATS_LEN_WITH_ERRORS {
@@ -2608,6 +2612,18 @@ mod tests {
             parse_packet_stats(&[0; 23]), // need at least 24
             Err(Error::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn test_parse_packet_stats_rejects_truncated_recv_errors() {
+        // 25, 26, 27 bytes: past the 24-byte legacy frame but short of the
+        // 28-byte recv_errors:u32 field -- a truncated field, not a legacy frame.
+        for len in [25, 26, 27] {
+            assert!(
+                matches!(parse_packet_stats(&vec![0; len]), Err(Error::Protocol(_))),
+                "expected Err(Error::Protocol) for len={len}"
+            );
+        }
     }
 
     #[test]

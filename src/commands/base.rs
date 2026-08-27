@@ -682,8 +682,10 @@ impl CommandHandler {
 
     /// Get raw device stats for one category. `get_core_stats()`/
     /// `get_radio_stats()`/`get_packet_stats()` are typed convenience
-    /// wrappers over this; call this directly for a category that doesn't
-    /// have one yet.
+    /// wrappers over this; call this directly if you want the raw
+    /// [`StatsData::raw`] bytes (e.g. to log/forward them without decoding),
+    /// or for a future [`StatsCategory`] that doesn't have a typed wrapper
+    /// yet.
     ///
     /// Introduced in companion firmware `FIRMWARE_VER_CODE` 8+ (per the
     /// firmware's own inline comment on `CMD_GET_STATS`, from
