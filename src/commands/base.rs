@@ -65,6 +65,7 @@ const CMD_FACTORY_RESET: u8 = 51;
 const CMD_PATH_DISCOVERY: u8 = 52;
 const CMD_SET_FLOOD_SCOPE: u8 = 54;
 const CMD_SEND_CONTROL_DATA: u8 = 55;
+const CMD_GET_STATS: u8 = 56;
 const CMD_SET_AUTOADD_CONFIG: u8 = 58;
 const CMD_GET_AUTOADD_CONFIG: u8 = 59;
 
@@ -677,6 +678,67 @@ impl CommandHandler {
         data.extend_from_slice(control_data);
         self.send(&data, Some(EventType::Ok)).await?;
         Ok(())
+    }
+
+    /// Get raw device stats for one category. `get_core_stats()`/
+    /// `get_radio_stats()`/`get_packet_stats()` are typed convenience
+    /// wrappers over this; call this directly if you want the raw
+    /// [`StatsData::raw`] bytes (e.g. to log/forward them without decoding),
+    /// or for a future [`StatsCategory`] that doesn't have a typed wrapper
+    /// yet.
+    ///
+    /// Introduced in companion firmware `FIRMWARE_VER_CODE` 8+ (per the
+    /// firmware's own inline comment on `CMD_GET_STATS`, from
+    /// [`DeviceInfoData::fw_version_code`] after
+    /// [`CommandHandler::send_device_query`]). On older firmware the command
+    /// byte is unrecognized and the node replies with an error frame,
+    /// surfaced here as `Err(Error::Device(_))` rather than a timeout.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use meshcore_rs::events::StatsCategory;
+    /// # async fn example(handler: meshcore_rs::commands::CommandHandler) -> meshcore_rs::Result<()> {
+    /// let stats = handler.get_stats(StatsCategory::Core).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Format: [CMD_GET_STATS=56][stats_type]
+    pub async fn get_stats(&self, category: StatsCategory) -> Result<StatsData> {
+        let data = [CMD_GET_STATS, category as u8];
+        let event_type = match category {
+            StatsCategory::Core => EventType::StatsCore,
+            StatsCategory::Radio => EventType::StatsRadio,
+            StatsCategory::Packets => EventType::StatsPackets,
+        };
+        let event = self
+            .send_multi(&data, &[event_type, EventType::Error], self.default_timeout)
+            .await?;
+
+        match event.payload {
+            EventPayload::Stats(data) => Ok(data),
+            EventPayload::String(msg) => Err(Error::device(msg)),
+            _ => Err(Error::protocol("Unexpected response to stats query")),
+        }
+    }
+
+    /// Get core device stats (battery, uptime, error count, queue length).
+    /// See [`Self::get_stats`] for firmware-version/error-behavior notes.
+    pub async fn get_core_stats(&self) -> Result<CoreStatsData> {
+        self.get_stats(StatsCategory::Core).await?.as_core()
+    }
+
+    /// Get radio stats (noise floor, last RSSI/SNR, cumulative airtime).
+    /// See [`Self::get_stats`] for firmware-version/error-behavior notes.
+    pub async fn get_radio_stats(&self) -> Result<RadioStatsData> {
+        self.get_stats(StatsCategory::Radio).await?.as_radio()
+    }
+
+    /// Get packet counters.
+    /// See [`Self::get_stats`] for firmware-version/error-behavior notes.
+    pub async fn get_packet_stats(&self) -> Result<PacketStatsData> {
+        self.get_stats(StatsCategory::Packets).await?.as_packets()
     }
 
     /// Export private key
@@ -1885,6 +1947,173 @@ mod tests {
 
         let result = handler.send_control_data(&[0x01, 0x02, 0x03]).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_stats_core_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_GET_STATS, 0]); // stats_type=0 (Core)
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::StatsCore,
+                    EventPayload::Stats(StatsData {
+                        category: StatsCategory::Core,
+                        raw: vec![0xAA],
+                    }),
+                ))
+                .await;
+        });
+
+        let result = handler.get_stats(StatsCategory::Core).await;
+        assert_eq!(result.unwrap().raw, vec![0xAA]);
+    }
+
+    #[tokio::test]
+    async fn test_get_stats_unexpected_response_errors() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+            // Right EventType, wrong payload shape.
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(EventType::StatsCore, EventPayload::None))
+                .await;
+        });
+
+        let result = handler.get_stats(StatsCategory::Core).await;
+        assert!(matches!(result, Err(Error::Protocol(_))));
+    }
+
+    #[tokio::test]
+    async fn test_get_stats_errors_on_unsupported_command() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+
+            // Firmware older than FIRMWARE_VER_CODE 8 doesn't recognize
+            // CMD_GET_STATS and replies with an error frame instead of a
+            // Stats* event.
+            dispatcher_clone
+                .emit(MeshCoreEvent::error("Unsupported command"))
+                .await;
+        });
+
+        let result = handler.get_stats(StatsCategory::Core).await;
+        assert!(matches!(result, Err(Error::Device(_))));
+    }
+
+    #[tokio::test]
+    async fn test_get_core_stats_wire_format_and_decoding() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_GET_STATS, 0]);
+
+            // [battery_mv, uptime_secs, errors, queue_len]
+            let mut raw = Vec::new();
+            raw.extend_from_slice(&4012u16.to_le_bytes());
+            raw.extend_from_slice(&123456u32.to_le_bytes());
+            raw.extend_from_slice(&7u16.to_le_bytes());
+            raw.push(3);
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::StatsCore,
+                    EventPayload::Stats(StatsData {
+                        category: StatsCategory::Core,
+                        raw,
+                    }),
+                ))
+                .await;
+        });
+
+        let stats = handler.get_core_stats().await.unwrap();
+        assert_eq!(stats.battery_mv, 4012, "battery_mv");
+        assert_eq!(stats.uptime_secs, 123456, "uptime_secs");
+        assert_eq!(stats.errors, 7, "errors");
+        assert_eq!(stats.queue_len, 3, "queue_len");
+    }
+
+    #[tokio::test]
+    async fn test_get_radio_stats_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_GET_STATS, 1]); // stats_type=1 (Radio)
+
+            // [noise_floor, last_rssi, last_snr_scaled, tx_air_secs, rx_air_secs]
+            let mut raw = Vec::new();
+            raw.extend_from_slice(&(-100i16).to_le_bytes());
+            raw.push((-70i8) as u8);
+            raw.push(20i8 as u8); // 20 / 4.0 = 5.0 dB
+            raw.extend_from_slice(&10u32.to_le_bytes());
+            raw.extend_from_slice(&20u32.to_le_bytes());
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::StatsRadio,
+                    EventPayload::Stats(StatsData {
+                        category: StatsCategory::Radio,
+                        raw,
+                    }),
+                ))
+                .await;
+        });
+
+        let stats = handler.get_radio_stats().await.unwrap();
+        assert_eq!(stats.noise_floor, -100, "noise_floor");
+        assert_eq!(stats.last_rssi, -70, "last_rssi");
+        assert_eq!(stats.last_snr, 5.0, "last_snr");
+        assert_eq!(stats.tx_air_secs, 10, "tx_air_secs");
+        assert_eq!(stats.rx_air_secs, 20, "rx_air_secs");
+    }
+
+    #[tokio::test]
+    async fn test_get_packet_stats_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent, vec![CMD_GET_STATS, 2]); // stats_type=2 (Packets)
+
+            // [recv, sent, flood_tx, direct_tx, flood_rx, direct_rx]
+            let mut raw = Vec::new();
+            for value in [1000u32, 500, 100, 400, 200, 800] {
+                raw.extend_from_slice(&value.to_le_bytes());
+            }
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::StatsPackets,
+                    EventPayload::Stats(StatsData {
+                        category: StatsCategory::Packets,
+                        raw,
+                    }),
+                ))
+                .await;
+        });
+
+        let stats = handler.get_packet_stats().await.unwrap();
+        assert_eq!(stats.recv, 1000, "recv");
+        assert_eq!(stats.sent, 500, "sent");
+        assert_eq!(stats.flood_tx, 100, "flood_tx");
+        assert_eq!(stats.direct_tx, 400, "direct_tx");
+        assert_eq!(stats.flood_rx, 200, "flood_rx");
+        assert_eq!(stats.direct_rx, 800, "direct_rx");
+        assert_eq!(stats.recv_errors, None, "recv_errors");
     }
 
     #[tokio::test]

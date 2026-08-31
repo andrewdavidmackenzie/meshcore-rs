@@ -175,6 +175,9 @@ traffic never triggers it; use `LogData` for general monitoring as above.
 - `get_autoadd_config()` - Get auto-add-contacts flags (contact-type bitmask + the table-full "overwrite oldest" bit)
 - `set_autoadd_config()` - Set auto-add-contacts flags, with an optional max-hop limit
 - `export_private_key()` / `import_private_key()` - Key management
+- `get_core_stats()` - Battery, uptime, error count, queue length
+- `get_radio_stats()` - Noise floor, last RSSI/SNR, cumulative airtime
+- `get_packet_stats()` - Packet counters (see `examples/node_stats.rs`)
 
 ### Contact Commands
 
@@ -229,7 +232,7 @@ assumed).
 | 39 (0x27) | `SEND_TELEMETRY_REQ` | Request telemetry from a contact — **deprecated in firmware** in favor of `SEND_BINARY_REQ` (already supported here, see `req_telemetry()`) | companion-v1.6.0 | ✅ `send_telemetry_req()` |
 | 42 (0x2A) | `GET_ADVERT_PATH` | Last known route recorded for a contact's public key | companion-v1.7.1 | ✅ `get_advert_path()` |
 | 43 (0x2B) | `GET_TUNING_PARAMS` | Read radio tuning params (rx delay base, airtime factor) — note `SET_TUNING_PARAMS` (21, above) isn't actually wired up here either, despite its `CMD_*` constant existing | companion-v1.7.3 | ✅ `get_tuning()` |
-| 56 (0x38) | `GET_STATS` | Core/radio/packet statistics (sub-type in byte 2) | companion-v1.11.0 | ✅ `get_stats_core()`/`get_stats_radio()`/`get_stats_packets()` |
+| 56 (0x38) | `GET_STATS` | Core/radio/packet statistics (sub-type in byte 2) | companion-v1.11.0 | ✅ `get_core_stats()`/`get_radio_stats()`/`get_packet_stats()` |
 | 57 (0x39) | `SEND_ANON_REQ` | Request to a peer that isn't (yet) a known contact | companion-v1.12.0 | ✅ `send_anon_req()` |
 | 60 (0x3C) | `GET_ALLOWED_REPEAT_FREQ` | Frequency ranges a repeater is allowed to retransmit on | companion-v1.13.0 | ✅ `get_allowed_repeat_freq()` |
 | 61 (0x3D) | `SET_PATH_HASH_MODE` | Path-hash size mode used when building routes | companion-v1.14.0 | ✅ `set_path_hash_mode()`/`get_path_hash_mode()` |
