@@ -200,7 +200,7 @@ pub fn parse_self_info(data: &[u8]) -> Result<SelfInfo> {
     let radio_bw = read_u32_le(data, 51)?;
 
     // check if we can go beyond 55 bytes
-    let (sf, cr, name) = if data.len() >= 55 {
+    let (sf, cr, name) = if data.len() >= 57 {
         let sf = data[55]; // jonesy:allow(bounds)
         let cr = data[56]; // jonesy:allow(bounds)
 
