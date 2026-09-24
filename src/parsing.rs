@@ -1,6 +1,7 @@
 //! Binary parsing utilities for MeshCore protocol
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use crate::error::Error;
 use crate::events::{
@@ -237,78 +238,95 @@ pub fn parse_self_info(data: &[u8]) -> Result<SelfInfo> {
     })
 }
 
-/// Parse device info response
-///
-/// Format (after response code byte):
-/// - Byte 0: Firmware version code
-/// - Byte 1: Max contacts / 2 (v3+)
-/// - Byte 2: Max channels (v3+)
-/// - Bytes 3-6: BLE PIN (u32 LE, v3+)
-/// - Bytes 7-18: Firmware build date (12 bytes, null-terminated, v3+)
-/// - Bytes 19-58: Model/manufacturer (40 bytes, null-terminated, v3+)
-/// - Bytes 59-78: Version string (20 bytes, null-terminated, v3+)
-/// - Byte 79: Repeat setting (v9+)
+/// A field present in a response from firmware `version` onward.
+#[derive(Clone, Copy)]
+struct FirmwareParameter {
+    version: u8,
+    offset: usize,
+    len: usize,
+}
+
+impl FirmwareParameter {
+    const fn end(self) -> usize {
+        self.offset + self.len
+    }
+
+    fn get(self, data: &[u8], version: u8) -> Option<&[u8]> {
+        if version < self.version {
+            return None;
+        }
+        data.get(self.range())
+    }
+
+    fn range(self) -> Range<usize> {
+        self.offset..self.end()
+    }
+}
+
+const DEVICE_INFO_FW_VERSION_CODE: FirmwareParameter = FirmwareParameter {
+    version: 0,
+    offset: 0,
+    len: 1,
+};
+const DEVICE_INFO_MAX_CONTACTS: FirmwareParameter = FirmwareParameter {
+    version: 3,
+    offset: DEVICE_INFO_FW_VERSION_CODE.end(), // 1
+    len: 1,
+};
+const DEVICE_INFO_MAX_CHANNELS: FirmwareParameter = FirmwareParameter {
+    version: 3,
+    offset: DEVICE_INFO_MAX_CONTACTS.end(), // 2
+    len: 1,
+};
+const DEVICE_INFO_BLE_PIN: FirmwareParameter = FirmwareParameter {
+    version: 3,
+    offset: DEVICE_INFO_MAX_CHANNELS.end(), // 3-6
+    len: 4,
+};
+const DEVICE_INFO_FW_BUILD: FirmwareParameter = FirmwareParameter {
+    version: 3,
+    offset: DEVICE_INFO_BLE_PIN.end(), // 7-18
+    len: 12,
+};
+const DEVICE_INFO_MODEL: FirmwareParameter = FirmwareParameter {
+    version: 3,
+    offset: DEVICE_INFO_FW_BUILD.end(), // 19-58
+    len: 40,
+};
+const DEVICE_INFO_VERSION: FirmwareParameter = FirmwareParameter {
+    version: 3,
+    offset: DEVICE_INFO_MODEL.end(), // 59-78
+    len: 20,
+};
+const DEVICE_INFO_REPEAT: FirmwareParameter = FirmwareParameter {
+    version: 9,
+    offset: DEVICE_INFO_VERSION.end(), // 79
+    len: 1,
+};
+const DEVICE_INFO_PATH_HASH_MODE: FirmwareParameter = FirmwareParameter {
+    version: 10,
+    offset: DEVICE_INFO_REPEAT.end(), // 80
+    len: 1,
+};
+
+/// Parse device info response (after response code byte)
 pub fn parse_device_info(data: &[u8]) -> Result<DeviceInfoData> {
-    // Minimum: 1 byte for fw_version_code
-    if data.is_empty() {
+    let Some(&[fw_version_code]) = DEVICE_INFO_FW_VERSION_CODE.get(data, 0) else {
         return Err(Error::protocol("DeviceInfo payload too short"));
-    }
-
-    let fw_version_code = data[0];
-
-    // Version 3+ fields require fw_version_code >= 3 and sufficient data
-    if fw_version_code < 3 || data.len() < 2 {
-        return Ok(DeviceInfoData {
-            fw_version_code,
-            max_contacts: None,
-            max_channels: None,
-            ble_pin: None,
-            fw_build: None,
-            model: None,
-            version: None,
-            repeat: None,
-        });
-    }
-
-    // Parse v3+ fields
-    let max_contacts = if data.len() > 1 {
-        Some(data[1].saturating_mul(2))
-    } else {
-        None
     };
 
-    let max_channels = if data.len() > 2 { Some(data[2]) } else { None };
+    let field = |p: FirmwareParameter| p.get(data, fw_version_code);
+    let byte = |p| field(p).map(|b| b[0]);
+    let string = |p: FirmwareParameter| field(p).map(|b| read_string(b, 0, p.len));
 
-    let ble_pin = if data.len() >= 7 {
-        read_u32_le(data, 3).ok()
-    } else {
-        None
-    };
-
-    let fw_build = if data.len() >= 19 {
-        Some(read_string(data, 7, 12))
-    } else {
-        None
-    };
-
-    let model = if data.len() >= 59 {
-        Some(read_string(data, 19, 40))
-    } else {
-        None
-    };
-
-    let version = if data.len() >= 79 {
-        Some(read_string(data, 59, 20))
-    } else {
-        None
-    };
-
-    // v9+ repeat field
-    let repeat = if data.len() >= 80 {
-        Some(data[79] != 0)
-    } else {
-        None
-    };
+    let max_contacts = byte(DEVICE_INFO_MAX_CONTACTS).map(|n| n.saturating_mul(2));
+    let max_channels = byte(DEVICE_INFO_MAX_CHANNELS);
+    let ble_pin = field(DEVICE_INFO_BLE_PIN).and_then(|b| read_u32_le(b, 0).ok());
+    let fw_build = string(DEVICE_INFO_FW_BUILD);
+    let model = string(DEVICE_INFO_MODEL);
+    let version = string(DEVICE_INFO_VERSION);
+    let repeat = byte(DEVICE_INFO_REPEAT).map(|b| b != 0);
+    let path_hash_mode = byte(DEVICE_INFO_PATH_HASH_MODE);
 
     Ok(DeviceInfoData {
         fw_version_code,
@@ -319,6 +337,7 @@ pub fn parse_device_info(data: &[u8]) -> Result<DeviceInfoData> {
         model,
         version,
         repeat,
+        path_hash_mode,
     })
 }
 
@@ -2078,14 +2097,18 @@ mod tests {
         assert!(info.ble_pin.is_none());
     }
 
+    fn put(data: &mut [u8], p: FirmwareParameter, bytes: &[u8]) {
+        data[p.range()][..bytes.len()].copy_from_slice(bytes);
+    }
+
     #[test]
     fn test_parse_device_info_v3_partial() {
         // v3+ but not all fields present
         let mut data = vec![0u8; 10];
-        data[0] = 3; // fw_version_code
-        data[1] = 25; // max_contacts / 2
-        data[2] = 4; // max_channels
-        data[3..7].copy_from_slice(&5678u32.to_le_bytes()); // ble_pin
+        put(&mut data, DEVICE_INFO_FW_VERSION_CODE, &[3]);
+        put(&mut data, DEVICE_INFO_MAX_CONTACTS, &[25]);
+        put(&mut data, DEVICE_INFO_MAX_CHANNELS, &[4]);
+        put(&mut data, DEVICE_INFO_BLE_PIN, &5678u32.to_le_bytes());
 
         let info = parse_device_info(&data).unwrap();
         assert_eq!(info.fw_version_code, 3);
@@ -2101,23 +2124,19 @@ mod tests {
     #[test]
     fn test_parse_device_info_full() {
         // Full v9+ device info
-        let mut data = vec![0u8; 80];
-        data[0] = 9; // fw_version_code
-        data[1] = 50; // max_contacts / 2 = 100
-        data[2] = 8; // max_channels
-        data[3..7].copy_from_slice(&1234u32.to_le_bytes()); // ble_pin
-
-        // fw_build at offset 7 (12 bytes)
-        data[7..18].copy_from_slice(b"Feb 15 2025");
-
-        // model at offset 19 (40 bytes)
-        data[19..29].copy_from_slice(b"T-Deck Pro");
-
-        // version at offset 59 (20 bytes)
-        data[59..64].copy_from_slice(b"1.2.3");
-
-        // repeat at offset 79
-        data[79] = 1;
+        let mut data = vec![0u8; DEVICE_INFO_REPEAT.end()];
+        put(
+            &mut data,
+            DEVICE_INFO_FW_VERSION_CODE,
+            &[DEVICE_INFO_REPEAT.version],
+        );
+        put(&mut data, DEVICE_INFO_MAX_CONTACTS, &[50]);
+        put(&mut data, DEVICE_INFO_MAX_CHANNELS, &[8]);
+        put(&mut data, DEVICE_INFO_BLE_PIN, &1234u32.to_le_bytes());
+        put(&mut data, DEVICE_INFO_FW_BUILD, b"Feb 15 2025");
+        put(&mut data, DEVICE_INFO_MODEL, b"T-Deck Pro");
+        put(&mut data, DEVICE_INFO_VERSION, b"1.2.3");
+        put(&mut data, DEVICE_INFO_REPEAT, &[1]);
 
         let info = parse_device_info(&data).unwrap();
         assert_eq!(info.fw_version_code, 9);
@@ -2128,13 +2147,26 @@ mod tests {
         assert_eq!(info.model.as_deref(), Some("T-Deck Pro"));
         assert_eq!(info.version.as_deref(), Some("1.2.3"));
         assert_eq!(info.repeat, Some(true));
+        assert!(info.path_hash_mode.is_none());
+    }
+
+    #[test]
+    fn parse_device_info_path_hash_mode() {
+        let p = DEVICE_INFO_PATH_HASH_MODE;
+        let mut data = vec![0u8; p.end()];
+        put(&mut data, DEVICE_INFO_FW_VERSION_CODE, &[p.version]);
+        put(&mut data, p, &[1]);
+
+        let info = parse_device_info(&data).unwrap();
+        assert_eq!(info.path_hash_mode, Some(1));
     }
 
     #[test]
     fn test_parse_device_info_repeat_false() {
-        let mut data = vec![0u8; 80];
-        data[0] = 9;
-        data[79] = 0; // repeat disabled
+        let p = DEVICE_INFO_REPEAT;
+        let mut data = vec![0u8; p.end()];
+        put(&mut data, DEVICE_INFO_FW_VERSION_CODE, &[p.version]);
+        put(&mut data, p, &[0]);
 
         let info = parse_device_info(&data).unwrap();
         assert_eq!(info.repeat, Some(false));
@@ -2143,9 +2175,10 @@ mod tests {
     #[test]
     fn test_parse_device_info_max_contacts_overflow() {
         // Test that max_contacts * 2 doesn't overflow
-        let mut data = vec![0u8; 3];
-        data[0] = 3;
-        data[1] = 200; // 200 * 2 = 400, but u8 max is 255, so saturates to 255
+        let p = DEVICE_INFO_MAX_CONTACTS;
+        let mut data = vec![0u8; p.end()];
+        put(&mut data, DEVICE_INFO_FW_VERSION_CODE, &[p.version]);
+        put(&mut data, p, &[200]); // 200 * 2 = 400, but u8 max is 255, so saturates to 255
 
         let info = parse_device_info(&data).unwrap();
         // 200 * 2 would overflow u8, but we use saturating_mul
