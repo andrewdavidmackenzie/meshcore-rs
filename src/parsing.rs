@@ -248,6 +248,7 @@ pub fn parse_self_info(data: &[u8]) -> Result<SelfInfo> {
 /// - Bytes 19-58: Model/manufacturer (40 bytes, null-terminated, v3+)
 /// - Bytes 59-78: Version string (20 bytes, null-terminated, v3+)
 /// - Byte 79: Repeat setting (v9+)
+/// - Byte 80: Path hash mode (v10+)
 pub fn parse_device_info(data: &[u8]) -> Result<DeviceInfoData> {
     // Minimum: 1 byte for fw_version_code
     if data.is_empty() {
@@ -260,13 +261,7 @@ pub fn parse_device_info(data: &[u8]) -> Result<DeviceInfoData> {
     if fw_version_code < 3 || data.len() < 2 {
         return Ok(DeviceInfoData {
             fw_version_code,
-            max_contacts: None,
-            max_channels: None,
-            ble_pin: None,
-            fw_build: None,
-            model: None,
-            version: None,
-            repeat: None,
+            ..Default::default()
         });
     }
 
@@ -310,6 +305,9 @@ pub fn parse_device_info(data: &[u8]) -> Result<DeviceInfoData> {
         None
     };
 
+    // v10+ path hash mode field
+    let path_hash_mode = data.get(80).copied();
+
     Ok(DeviceInfoData {
         fw_version_code,
         max_contacts,
@@ -319,6 +317,7 @@ pub fn parse_device_info(data: &[u8]) -> Result<DeviceInfoData> {
         model,
         version,
         repeat,
+        path_hash_mode,
     })
 }
 
@@ -2128,6 +2127,17 @@ mod tests {
         assert_eq!(info.model.as_deref(), Some("T-Deck Pro"));
         assert_eq!(info.version.as_deref(), Some("1.2.3"));
         assert_eq!(info.repeat, Some(true));
+        assert!(info.path_hash_mode.is_none());
+    }
+
+    #[test]
+    fn parse_device_info_path_hash_mode() {
+        let mut data = vec![0u8; 81];
+        data[0] = 10;
+        data[80] = 1;
+
+        let info = parse_device_info(&data).unwrap();
+        assert_eq!(info.path_hash_mode, Some(1));
     }
 
     #[test]
