@@ -1,4 +1,5 @@
 use crate::events::EventPayload;
+use crate::meshcore::DisconnectHook;
 use crate::{Error, EventType, MeshCore, MeshCoreEvent};
 use btleplug::api::{
     Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
@@ -152,7 +153,14 @@ impl MeshCore {
         tracing::info!("Subscribed to MeshCore notifications");
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
-        Ok((MeshCore::new_with_sender(tx), rx, tx_char))
+        let peripheral = peripheral.clone();
+        let hook: DisconnectHook = Box::new(move || {
+            let peripheral = peripheral.clone();
+            Box::pin(async move {
+                let _ = peripheral.disconnect().await;
+            })
+        });
+        Ok((MeshCore::new_with_sender(tx, Some(hook)), rx, tx_char))
     }
 
     /// Given a peripheral's name or mac address (as a &str formatted thus
