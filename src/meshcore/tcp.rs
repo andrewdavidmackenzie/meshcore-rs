@@ -9,7 +9,7 @@ impl MeshCore {
         use tokio::io::AsyncWriteExt;
 
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
-        let meshcore = MeshCore::new_with_sender(tx);
+        let meshcore = MeshCore::new_with_sender(tx, None);
 
         // Connect via TCP
         let addr = format!("{}:{}", host, port);

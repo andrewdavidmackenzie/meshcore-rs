@@ -9,7 +9,7 @@ impl MeshCore {
         use tokio_serial::SerialPortBuilderExt;
 
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
-        let meshcore = MeshCore::new_with_sender(tx);
+        let meshcore = MeshCore::new_with_sender(tx, None);
 
         // Open serial port
         let port = tokio_serial::new(port, baud_rate)

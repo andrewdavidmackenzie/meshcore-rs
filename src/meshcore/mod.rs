@@ -8,6 +8,7 @@ use crate::reader::MessageReader;
 use crate::Result;
 #[cfg(any(feature = "serial", feature = "tcp"))]
 use bytes::BytesMut;
+use futures::future::BoxFuture;
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,12 +49,19 @@ pub struct MeshCore {
     auto_fetch_sub: Arc<Mutex<Option<Subscription>>>,
     /// Background tasks
     pub(crate) tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    /// Transport cleanup to run on disconnect
+    on_disconnect: Option<DisconnectHook>,
 }
+
+pub(crate) type DisconnectHook = Box<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
 
 impl MeshCore {
     #[cfg(any(feature = "serial", feature = "ble", feature = "tcp"))]
     /// Create a new MeshCore client with a custom connection
-    pub(crate) fn new_with_sender(sender: mpsc::Sender<Vec<u8>>) -> Self {
+    pub(crate) fn new_with_sender(
+        sender: mpsc::Sender<Vec<u8>>,
+        on_disconnect: Option<DisconnectHook>,
+    ) -> Self {
         let dispatcher = Arc::new(EventDispatcher::new());
         let reader = Arc::new(MessageReader::new(dispatcher.clone()));
 
@@ -70,6 +78,7 @@ impl MeshCore {
             connected: Arc::new(RwLock::new(false)),
             auto_fetch_sub: Arc::new(Mutex::new(None)),
             tasks: Arc::new(Mutex::new(Vec::new())),
+            on_disconnect,
         }
     }
 
@@ -277,6 +286,12 @@ impl MeshCore {
             task.abort();
         }
 
+        // Close the link, which the Bluetooth stack may keep up after the
+        // process exits.
+        if let Some(hook) = &self.on_disconnect {
+            hook().await;
+        }
+
         // Emit disconnected event
         self.dispatcher
             .emit(MeshCoreEvent::new(
@@ -434,13 +449,14 @@ mod tests {
     use futures::StreamExt;
     use std::io::Cursor;
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Poll};
 
     // ========== Helper ==========
 
     fn create_test_meshcore() -> MeshCore {
         let (sender, _receiver) = mpsc::channel(16);
-        MeshCore::new_with_sender(sender)
+        MeshCore::new_with_sender(sender, None)
     }
 
     fn make_contact(name: &str, public_key: [u8; 32]) -> Contact {
@@ -738,6 +754,22 @@ mod tests {
 
         // Tasks vec should be drained
         assert!(mc.tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn disconnect_runs_hook() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        let hook: DisconnectHook = Box::new(move || {
+            let flag = flag.clone();
+            Box::pin(async move { flag.store(true, Ordering::SeqCst) })
+        });
+        let (sender, _receiver) = mpsc::channel(16);
+        let mc = MeshCore::new_with_sender(sender, Some(hook));
+
+        mc.disconnect().await.unwrap();
+
+        assert!(ran.load(Ordering::SeqCst));
     }
 
     // ========== set_default_timeout test ==========
