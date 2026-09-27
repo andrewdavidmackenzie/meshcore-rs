@@ -188,6 +188,7 @@ traffic never triggers it; use `LogData` for general monitoring as above.
 - `get_contact_by_key()` - Get one contact by public key
 - `add_contact()` - Add a contact
 - `remove_contact()` - Remove a contact
+- `reset_path()` - Reset a contact's path so messages to it are flooded
 - `export_contact()` - Export contact as URI
 - `import_contact()` - Import contact from card data
 
@@ -223,7 +224,6 @@ assumed).
 
 | Code | Name | Description | Minimum firmware version | In `meshcore_py`? |
 |---|---|---|---|---|
-| 13 (0x0D) | `RESET_PATH` | Reset a contact's known route back to flood routing | companion-v1.0.0a | ✅ `reset_path()` |
 | 16 (0x10) | `SHARE_CONTACT` | Re-share a known contact's advert with the mesh | companion-v1.0.0a | ✅ `share_contact()` |
 | 21 (0x15) | `SET_TUNING_PARAMS` | Set radio tuning params (rx delay base, airtime factor) | companion-v1.0.0a | ✅ `set_tuning()` |
 | 25 (0x19) | `SEND_RAW_DATA` | Send an opaque `RAW_CUSTOM` payload to a peer | companion-v1.0.0a | ✅ `send_raw_data()` |

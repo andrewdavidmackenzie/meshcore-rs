@@ -966,12 +966,30 @@ impl CommandHandler {
     ///
     /// Format: [CMD_REMOVE_CONTACT=0x0F][pubkey: 32]
     pub async fn remove_contact(&self, key: impl Into<Destination>) -> Result<()> {
+        self.send_key_checked(CMD_REMOVE_CONTACT, key, "Remove contact")
+            .await
+    }
+
+    /// Reset a contact's path so that messages to it are flooded
+    ///
+    /// Format: [CMD_RESET_PATH=0x0D][pubkey: 32]
+    pub async fn reset_path(&self, key: impl Into<Destination>) -> Result<()> {
+        self.send_key_checked(CMD_RESET_PATH, key, "Reset path")
+            .await
+    }
+
+    async fn send_key_checked(
+        &self,
+        cmd: u8,
+        key: impl Into<Destination>,
+        what: &str,
+    ) -> Result<()> {
         let dest: Destination = key.into();
         let pubkey = dest.public_key().ok_or_else(|| {
-            Error::invalid_param("Remove contact requires full 32-byte public key")
+            Error::invalid_param(format!("{what} requires full 32-byte public key"))
         })?;
 
-        let mut data = vec![CMD_REMOVE_CONTACT];
+        let mut data = vec![cmd];
         data.extend_from_slice(&pubkey);
         self.send_checked(&data).await?;
         Ok(())
@@ -2184,6 +2202,7 @@ mod tests {
         assert!(bad(handler.send_control_data(&[1]).await));
         assert!(bad(handler.send_channel_msg(1, "m", None).await));
         assert!(bad(handler.sign_data(&[1]).await));
+        assert!(bad(handler.reset_path(&c).await));
     }
 
     // The firmware's error frame carries a numeric code, which must reach the
@@ -2614,6 +2633,22 @@ mod tests {
         let (handler, _rx, _dispatcher) = create_test_handler();
         let result = handler.remove_contact("aabbccddeeff").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn reset_path_sends_full_public_key() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_RESET_PATH);
+            assert_eq!(&sent[1..], [0xaau8; 32].as_slice());
+            dispatcher.emit(MeshCoreEvent::ok()).await;
+        });
+
+        let key = "aa".repeat(32);
+        assert!(handler.reset_path(key.as_str()).await.is_ok());
+        assert!(handler.reset_path("aabbccddeeff").await.is_err());
     }
 
     #[tokio::test]
