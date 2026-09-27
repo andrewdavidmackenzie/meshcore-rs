@@ -1252,9 +1252,7 @@ mod tests {
         let mut receiver = dispatcher.receiver();
 
         let mut data = vec![PacketType::PathUpdate as u8];
-        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]); // prefix
-        data.push(3); // path_len
-        data.extend_from_slice(&[0x0A, 0x0B, 0x0C]); // path
+        data.extend_from_slice(&[0x5A; 32]);
 
         reader.handle_rx(data).await.unwrap();
 
@@ -1266,9 +1264,7 @@ mod tests {
         assert_eq!(event.event_type, EventType::PathUpdate);
         match event.payload {
             EventPayload::PathUpdate(update) => {
-                assert_eq!(update.prefix, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
-                assert_eq!(update.path_len, 3);
-                assert_eq!(update.path, vec![0x0A, 0x0B, 0x0C]);
+                assert_eq!(update.public_key, [0x5A; 32]);
             }
             _ => panic!("Expected PathUpdate payload"),
         }

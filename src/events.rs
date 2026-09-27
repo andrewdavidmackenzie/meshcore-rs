@@ -445,12 +445,14 @@ pub struct AdvertisementData {
 /// Path update data
 #[derive(Debug, Clone)]
 pub struct PathUpdateData {
-    /// Node public key prefix
-    pub prefix: [u8; 6],
-    /// New path length
-    pub path_len: i8,
-    /// New path
-    pub path: Vec<u8>,
+    /// Node public key
+    pub public_key: [u8; 32],
+}
+
+impl From<[u8; 32]> for PathUpdateData {
+    fn from(public_key: [u8; 32]) -> Self {
+        Self { public_key }
+    }
 }
 
 /// Trace info
@@ -1657,18 +1659,6 @@ mod tests {
         };
         let debug_str = format!("{:?}", advert);
         assert!(debug_str.contains("Node1"));
-    }
-
-    #[test]
-    fn test_path_update_data_clone() {
-        let update = PathUpdateData {
-            prefix: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
-            path_len: 3,
-            path: vec![0x0A, 0x0B, 0x0C],
-        };
-        let cloned = update.clone();
-        assert_eq!(cloned.path_len, 3);
-        assert_eq!(cloned.path, vec![0x0A, 0x0B, 0x0C]);
     }
 
     #[test]

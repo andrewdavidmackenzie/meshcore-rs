@@ -1182,34 +1182,13 @@ pub fn parse_advertisement(payload: &[u8]) -> Result<AdvertisementData> {
     })
 }
 
-// --- PathUpdate payload layout ---
-
-/// Minimum length for a PathUpdate payload (prefix + path_len byte).
-const PATH_UPDATE_MIN_LEN: usize = 7;
-const PATH_UPDATE_PATH_LEN_OFFSET: usize = 6;
-const PATH_UPDATE_PATH_OFFSET: usize = 7;
-
 /// Parse a [`PathUpdateData`] from a `PacketType::PathUpdate` payload.
 ///
 /// Returns an error if the payload is too short.
 pub fn parse_path_update(payload: &[u8]) -> Result<PathUpdateData> {
-    if payload.len() < PATH_UPDATE_MIN_LEN {
-        return Err(Error::protocol("PathUpdate payload too short"));
-    }
-
-    let prefix: [u8; 6] = read_bytes(payload, 0)?;
-    let path_len = payload[PATH_UPDATE_PATH_LEN_OFFSET] as i8; // jonesy:allow(bounds) -- checked >= PATH_UPDATE_MIN_LEN above
-    let path = if payload.len() > PATH_UPDATE_PATH_OFFSET {
-        payload[PATH_UPDATE_PATH_OFFSET..].to_vec()
-    } else {
-        Vec::new()
-    };
-
-    Ok(PathUpdateData {
-        prefix,
-        path_len,
-        path,
-    })
+    read_bytes(payload, 0)
+        .map(PathUpdateData::from)
+        .map_err(|_| Error::protocol("PathUpdate payload too short"))
 }
 
 // --- TraceData payload layout ---
@@ -2756,35 +2735,14 @@ mod tests {
     #[test]
     fn test_parse_path_update_too_short() {
         assert!(parse_path_update(&[]).is_err());
-        assert!(parse_path_update(&[0; 6]).is_err());
+        assert!(parse_path_update(&[0; 31]).is_err());
     }
 
     #[test]
-    fn test_parse_path_update_no_path() {
-        let mut data = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66]; // prefix
-        data.push(0x03); // path_len = 3
-        let update = parse_path_update(&data).unwrap();
-        assert_eq!(update.prefix, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        assert_eq!(update.path_len, 3);
-        assert!(update.path.is_empty());
-    }
-
-    #[test]
-    fn test_parse_path_update_with_path() {
-        let mut data = vec![0xAA; 6]; // prefix
-        data.push(0x02); // path_len = 2
-        data.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
-        let update = parse_path_update(&data).unwrap();
-        assert_eq!(update.path_len, 2);
-        assert_eq!(update.path, vec![0xDE, 0xAD, 0xBE, 0xEF]);
-    }
-
-    #[test]
-    fn test_parse_path_update_negative_path_len() {
-        let mut data = vec![0xBB; 6]; // prefix
-        data.push(0xFF); // path_len as i8 = -1 (flood)
-        let update = parse_path_update(&data).unwrap();
-        assert_eq!(update.path_len, -1);
+    fn test_parse_path_update() {
+        let key: [u8; 32] = std::array::from_fn(|i| i as u8);
+        let update = parse_path_update(&key).unwrap();
+        assert_eq!(update.public_key, key);
     }
 
     // ========== parse_trace_data tests ==========
