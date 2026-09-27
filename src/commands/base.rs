@@ -1049,10 +1049,14 @@ impl CommandHandler {
     /// Send a message to a contact
     ///
     /// Format: [CMD_SEND_TXT_MSG=0x02][txt_type][attempt][timestamp: u32][pubkey_prefix: 6][message]
+    ///
+    /// A retry should pass the next `attempt` (an ACK only uses the low two
+    /// bits) and the first send's `timestamp`.
     pub async fn send_msg(
         &self,
         dest: impl Into<Destination>,
         msg: &str,
+        attempt: u8,
         timestamp: Option<u32>,
     ) -> Result<MsgSentInfo> {
         let dest: Destination = dest.into();
@@ -1064,8 +1068,8 @@ impl CommandHandler {
                 .as_secs() as u32
         });
 
-        // TXT_TYPE_PLAIN = 0, attempt = 0
-        let mut data = vec![CMD_SEND_TXT_MSG, 0x00, 0x00]; // Second 0x00 is "attempt"
+        // TXT_TYPE_PLAIN = 0
+        let mut data = vec![CMD_SEND_TXT_MSG, 0x00, attempt];
         data.extend_from_slice(&ts.to_le_bytes());
         data.extend_from_slice(&prefix);
         data.extend_from_slice(msg.as_bytes());
@@ -2614,6 +2618,41 @@ mod tests {
         let result = handler.get_channel(0).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().name, "General");
+    }
+
+    #[tokio::test]
+    async fn send_msg_wire_format() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_SEND_TXT_MSG);
+            assert_eq!(sent[1], 0); // TXT_TYPE_PLAIN
+            assert_eq!(sent[2], 5); // attempt
+            assert_eq!(&sent[3..7], &0x01020304u32.to_le_bytes());
+            assert_eq!(&sent[7..13], &[0xAA; 6]);
+            assert_eq!(&sent[13..], b"hi");
+
+            let info = MsgSentInfo {
+                message_type: 0,
+                expected_ack: [0x01, 0x02, 0x03, 0x04],
+                suggested_timeout: 5000,
+            };
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::MsgSent,
+                    EventPayload::MsgSent(info),
+                ))
+                .await;
+        });
+
+        let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
+        let info = handler
+            .send_msg(dest, "hi", 5, Some(0x01020304))
+            .await
+            .unwrap();
+        assert_eq!(info.expected_ack, [0x01, 0x02, 0x03, 0x04]);
     }
 
     #[tokio::test]
