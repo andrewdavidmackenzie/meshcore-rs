@@ -452,6 +452,7 @@ pub async fn read_task<R>(
 mod tests {
     use super::*;
     use crate::events::Contact;
+    use crate::PUBLIC_KEY_LEN;
     use futures::StreamExt;
     use std::io::Cursor;
     use std::pin::Pin;
@@ -464,7 +465,7 @@ mod tests {
         MeshCore::new_with_sender(sender)
     }
 
-    fn make_contact(name: &str, public_key: [u8; 32]) -> Contact {
+    fn make_contact(name: &str, public_key: [u8; PUBLIC_KEY_LEN]) -> Contact {
         Contact {
             public_key,
             contact_type: 1,
@@ -611,7 +612,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_contact_by_name_found() {
         let mc = create_test_meshcore();
-        let mut key = [0u8; 32];
+        let mut key = [0u8; PUBLIC_KEY_LEN];
         key[0] = 0xAA;
         let contact = make_contact("Alice", key);
         mc.contacts
@@ -627,7 +628,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_contact_by_name_case_insensitive() {
         let mc = create_test_meshcore();
-        let mut key = [0u8; 32];
+        let mut key = [0u8; PUBLIC_KEY_LEN];
         key[0] = 0xBB;
         let contact = make_contact("Bob", key);
         mc.contacts
@@ -655,7 +656,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_contact_by_prefix_found() {
         let mc = create_test_meshcore();
-        let mut key = [0u8; 32];
+        let mut key = [0u8; PUBLIC_KEY_LEN];
         key[0] = 0x01;
         key[1] = 0x02;
         key[2] = 0x03;
@@ -673,7 +674,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_contact_by_prefix_partial_match() {
         let mc = create_test_meshcore();
-        let mut key = [0u8; 32];
+        let mut key = [0u8; PUBLIC_KEY_LEN];
         key[0] = 0xDE;
         key[1] = 0xAD;
         let contact = make_contact("Dave", key);
@@ -697,7 +698,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_contact_by_prefix_empty() {
         let mc = create_test_meshcore();
-        let mut key = [0u8; 32];
+        let mut key = [0u8; PUBLIC_KEY_LEN];
         key[0] = 0x01;
         let contact = make_contact("Eve", key);
         mc.contacts
@@ -914,7 +915,7 @@ mod tests {
         mc.setup_event_handlers().await;
 
         // Emit a Contacts event
-        let contact = make_contact("Handler Test", [0x11; 32]);
+        let contact = make_contact("Handler Test", [0x11; PUBLIC_KEY_LEN]);
         mc.dispatcher()
             .emit(MeshCoreEvent::new(
                 EventType::Contacts,
@@ -976,7 +977,7 @@ mod tests {
         let mc = create_test_meshcore();
         mc.setup_event_handlers().await;
 
-        let contact = make_contact("NewPeer", [0x22; 32]);
+        let contact = make_contact("NewPeer", [0x22; PUBLIC_KEY_LEN]);
         mc.dispatcher()
             .emit(MeshCoreEvent::new(
                 EventType::NewContact,
@@ -988,7 +989,7 @@ mod tests {
 
         let contacts = mc.contacts().await;
         assert_eq!(contacts.len(), 1);
-        let key_hex = crate::parsing::hex_encode(&[0x22; 32]);
+        let key_hex = crate::parsing::hex_encode(&[0x22; PUBLIC_KEY_LEN]);
         assert!(contacts.contains_key(&key_hex));
     }
 

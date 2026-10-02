@@ -20,13 +20,14 @@ mod common;
 
 use common::{connect, parse_args, ConnectionArgs};
 use meshcore_rs::events::Contact;
+use meshcore_rs::PUBLIC_KEY_LEN;
 
 /// Public key for the synthetic test contact: sequential bytes 0x00..0x1F,
 /// so it's unmistakably not a real device's key.
-const TEST_PUBLIC_KEY: [u8; 32] = {
-    let mut key = [0u8; 32];
+const TEST_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = {
+    let mut key = [0u8; PUBLIC_KEY_LEN];
     let mut i = 0;
-    while i < 32 {
+    while i < PUBLIC_KEY_LEN {
         key[i] = i as u8;
         i += 1;
     }

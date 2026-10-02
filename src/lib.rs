@@ -66,6 +66,8 @@ pub mod reader;
 mod meshcore;
 
 // Protocol constants
+/// Length of a node public key in bytes
+pub const PUBLIC_KEY_LEN: usize = 32;
 /// Length of the channel name field in bytes
 pub const CHANNEL_NAME_LEN: usize = 32;
 /// Length of channel secret field in bytes

@@ -9,7 +9,7 @@ use crate::events::*;
 use crate::packets::BinaryReqType;
 use crate::parsing::{hex_decode, hex_encode, to_microdegrees};
 use crate::reader::MessageReader;
-use crate::{Error, Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
+use crate::{Error, Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, PUBLIC_KEY_LEN};
 
 /// Default command timeout
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -108,18 +108,18 @@ impl Destination {
     }
 
     /// Get the full public key if available (32 bytes)
-    pub fn public_key(&self) -> Option<[u8; 32]> {
+    pub fn public_key(&self) -> Option<[u8; PUBLIC_KEY_LEN]> {
         match self {
-            Destination::Bytes(b) if b.len() >= 32 => {
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&b[..32]);
+            Destination::Bytes(b) if b.len() >= PUBLIC_KEY_LEN => {
+                let mut key = [0u8; PUBLIC_KEY_LEN];
+                key.copy_from_slice(&b[..PUBLIC_KEY_LEN]);
                 Some(key)
             }
             Destination::Hex(s) => {
                 let bytes = hex_decode(s).ok()?;
-                if bytes.len() >= 32 {
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&bytes[..32]);
+                if bytes.len() >= PUBLIC_KEY_LEN {
+                    let mut key = [0u8; PUBLIC_KEY_LEN];
+                    key.copy_from_slice(&bytes[..PUBLIC_KEY_LEN]);
                     Some(key)
                 } else {
                     None
@@ -1240,7 +1240,7 @@ impl CommandHandler {
             Error::invalid_param("Neighbours request requires full 32-byte public key")
         })?;
 
-        if pubkey_prefix_length > 32 {
+        if usize::from(pubkey_prefix_length) > PUBLIC_KEY_LEN {
             return Err(Error::invalid_param(
                 "pubkey_prefix_length cannot exceed 32",
             ));
@@ -1406,7 +1406,7 @@ mod tests {
     #[test]
     fn test_destination_from_contact() {
         let contact = Contact {
-            public_key: [0xAA; 32],
+            public_key: [0xAA; PUBLIC_KEY_LEN],
             contact_type: 1,
             flags: 0,
             path_len: -1,
@@ -1424,7 +1424,7 @@ mod tests {
     #[test]
     fn test_destination_from_contact_ref() {
         let contact = Contact {
-            public_key: [0xBB; 32],
+            public_key: [0xBB; PUBLIC_KEY_LEN],
             contact_type: 1,
             flags: 0,
             path_len: -1,
@@ -1469,7 +1469,7 @@ mod tests {
 
     #[test]
     fn test_destination_prefix_from_contact() {
-        let mut public_key = [0u8; 32];
+        let mut public_key = [0u8; PUBLIC_KEY_LEN];
         public_key[0..6].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
         let contact = Contact {
             public_key,
@@ -1490,10 +1490,10 @@ mod tests {
 
     #[test]
     fn test_destination_public_key_from_bytes_32() {
-        let bytes = vec![0xAA; 32];
+        let bytes = vec![0xAA; PUBLIC_KEY_LEN];
         let dest: Destination = bytes.into();
         let key = dest.public_key().unwrap();
-        assert_eq!(key, [0xAA; 32]);
+        assert_eq!(key, [0xAA; PUBLIC_KEY_LEN]);
     }
 
     #[test]
@@ -1506,10 +1506,10 @@ mod tests {
     #[test]
     fn test_destination_public_key_from_hex_32() {
         // 32 bytes = 64 hex chars
-        let hex = "aa".repeat(32);
+        let hex = "aa".repeat(PUBLIC_KEY_LEN);
         let dest: Destination = hex.into();
         let key = dest.public_key().unwrap();
-        assert_eq!(key, [0xAA; 32]);
+        assert_eq!(key, [0xAA; PUBLIC_KEY_LEN]);
     }
 
     #[test]
@@ -1521,7 +1521,7 @@ mod tests {
     #[test]
     fn test_destination_public_key_from_contact() {
         let contact = Contact {
-            public_key: [0xCC; 32],
+            public_key: [0xCC; PUBLIC_KEY_LEN],
             contact_type: 1,
             flags: 0,
             path_len: -1,
@@ -1534,7 +1534,7 @@ mod tests {
         };
         let dest: Destination = contact.into();
         let key = dest.public_key().unwrap();
-        assert_eq!(key, [0xCC; 32]);
+        assert_eq!(key, [0xCC; PUBLIC_KEY_LEN]);
     }
 
     #[test]
@@ -1776,7 +1776,7 @@ mod tests {
                 adv_type: 1,
                 tx_power: 20,
                 max_tx_power: 30,
-                public_key: [0; 32],
+                public_key: [0; PUBLIC_KEY_LEN],
                 adv_lat: 0,
                 adv_lon: 0,
                 multi_acks: 0,
@@ -2271,7 +2271,7 @@ mod tests {
             assert_eq!(sent[0], CMD_GET_CONTACTS);
 
             let contacts = vec![Contact {
-                public_key: [0xAA; 32],
+                public_key: [0xAA; PUBLIC_KEY_LEN],
                 contact_type: 1,
                 flags: 0,
                 path_len: 2,
@@ -2325,14 +2325,14 @@ mod tests {
         // Regression test: this used to send only a 6-byte prefix, despite
         // the documented wire format requiring the full 32-byte public key.
         let (handler, mut rx, dispatcher) = create_test_handler();
-        let pubkey_hex = "bb".repeat(32);
+        let pubkey_hex = "bb".repeat(PUBLIC_KEY_LEN);
 
         let dispatcher_clone = dispatcher.clone();
         tokio::spawn(async move {
             let sent = rx.recv().await.unwrap();
             assert_eq!(sent[0], CMD_EXPORT_CONTACT);
-            assert_eq!(sent.len(), 1 + 32);
-            assert_eq!(&sent[1..], [0xbbu8; 32].as_slice());
+            assert_eq!(sent.len(), 1 + PUBLIC_KEY_LEN);
+            assert_eq!(&sent[1..], [0xbbu8; PUBLIC_KEY_LEN].as_slice());
 
             dispatcher_clone
                 .emit(MeshCoreEvent::new(
@@ -2361,14 +2361,14 @@ mod tests {
         // the documented wire format requiring the full 32-byte public key
         // -- causing the real firmware to never respond (timeout).
         let (handler, mut rx, dispatcher) = create_test_handler();
-        let pubkey_hex = "aa".repeat(32);
+        let pubkey_hex = "aa".repeat(PUBLIC_KEY_LEN);
 
         let dispatcher_clone = dispatcher.clone();
         tokio::spawn(async move {
             let sent = rx.recv().await.unwrap();
             assert_eq!(sent[0], CMD_REMOVE_CONTACT);
-            assert_eq!(sent.len(), 1 + 32);
-            assert_eq!(&sent[1..], [0xaau8; 32].as_slice());
+            assert_eq!(sent.len(), 1 + PUBLIC_KEY_LEN);
+            assert_eq!(&sent[1..], [0xaau8; PUBLIC_KEY_LEN].as_slice());
 
             dispatcher_clone
                 .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
@@ -2767,7 +2767,7 @@ mod tests {
             // Verify wire format: [CMD=0x32][pubkey:32][req_type]
             assert_eq!(sent[0], CMD_SEND_BINARY_REQ);
             // Bytes 1..33 should be the pubkey
-            assert_eq!(&sent[1..33], &[0xAA; 32]);
+            assert_eq!(&sent[1..33], &[0xAA; PUBLIC_KEY_LEN]);
             // Byte 33 should be the request type (Telemetry = 0x03)
             assert_eq!(sent[33], BinaryReqType::Telemetry as u8);
 
@@ -2783,7 +2783,7 @@ mod tests {
                 .await;
         });
 
-        let dest = vec![0xAAu8; 32];
+        let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
         let result = handler
             .send_binary_req(dest, BinaryReqType::Telemetry)
             .await;
@@ -2801,7 +2801,7 @@ mod tests {
             //              [version:u8=0][count:u8][offset:u16 LE]
             //              [order_by:u8][pk_plen:u8][nonce:u32 LE]
             assert_eq!(sent[0], CMD_SEND_BINARY_REQ);
-            assert_eq!(&sent[1..33], &[0xBB; 32]); // pubkey
+            assert_eq!(&sent[1..33], &[0xBB; PUBLIC_KEY_LEN]);
             assert_eq!(sent[33], BinaryReqType::Neighbours as u8); // 0x06
             assert_eq!(sent[34], 0); // version
             assert_eq!(sent[35], 10); // count
@@ -2853,7 +2853,7 @@ mod tests {
                 .await;
         });
 
-        let dest = vec![0xBBu8; 32];
+        let dest = vec![0xBBu8; PUBLIC_KEY_LEN];
         let result = handler
             .request_neighbours_with_timeout(dest, 10, 5, 2, 4, Duration::from_millis(500))
             .await;
@@ -2863,7 +2863,7 @@ mod tests {
     #[tokio::test]
     async fn test_request_neighbours_invalid_pubkey_prefix_length() {
         let (handler, _rx, _dispatcher) = create_test_handler();
-        let dest = vec![0xAAu8; 32];
+        let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
         let result = handler
             .request_neighbours_with_timeout(dest, 10, 0, 0, 33, Duration::from_millis(100))
             .await;
@@ -2874,7 +2874,7 @@ mod tests {
     async fn test_send_path_discovery_wire_format() {
         let (handler, mut rx, _dispatcher) = create_test_handler();
 
-        let dest = vec![0xAAu8; 32];
+        let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
         // The command will timeout since no response comes, but we can
         // check the wire format of what was sent.
         let _result = handler
@@ -2885,7 +2885,7 @@ mod tests {
         let sent = rx.recv().await.unwrap();
         assert_eq!(sent[0], CMD_PATH_DISCOVERY); // command byte
         assert_eq!(sent[1], 0x00); // reserved byte
-        assert_eq!(&sent[2..34], &[0xAA; 32]); // 32-byte public key
+        assert_eq!(&sent[2..34], &[0xAA; PUBLIC_KEY_LEN]);
         assert_eq!(sent.len(), 34); // total: 1 + 1 + 32
     }
 
@@ -2934,7 +2934,7 @@ mod tests {
                 .await;
         });
 
-        let dest = vec![0xAAu8; 32];
+        let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
         let result = handler
             .send_path_discovery_with_timeout(dest, Duration::from_millis(500))
             .await;

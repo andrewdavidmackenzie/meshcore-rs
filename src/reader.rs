@@ -593,7 +593,7 @@ impl MessageReader {
 mod tests {
     use super::*;
     use crate::packets::RouteType;
-    use crate::{CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN};
+    use crate::{CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, PUBLIC_KEY_LEN};
     use std::time::Duration;
 
     fn create_reader() -> (MessageReader, Arc<EventDispatcher>) {
@@ -721,7 +721,7 @@ mod tests {
 
         // Add some fake contacts
         reader.pending_contacts.write().await.push(Contact {
-            public_key: [0u8; 32],
+            public_key: [0u8; PUBLIC_KEY_LEN],
             contact_type: 1,
             flags: 0,
             path_len: 0,
@@ -1252,7 +1252,7 @@ mod tests {
         let mut receiver = dispatcher.receiver();
 
         let mut data = vec![PacketType::PathUpdate as u8];
-        data.extend_from_slice(&[0x5A; 32]);
+        data.extend_from_slice(&[0x5A; PUBLIC_KEY_LEN]);
 
         reader.handle_rx(data).await.unwrap();
 
@@ -1264,7 +1264,7 @@ mod tests {
         assert_eq!(event.event_type, EventType::PathUpdate);
         match event.payload {
             EventPayload::PathUpdate(update) => {
-                assert_eq!(update.public_key, [0x5A; 32]);
+                assert_eq!(update.public_key, [0x5A; PUBLIC_KEY_LEN]);
             }
             _ => panic!("Expected PathUpdate payload"),
         }
@@ -2181,7 +2181,7 @@ mod tests {
         let mut data = vec![PacketType::AdvertResponse as u8];
         // tag (4) + pubkey (32) + adv_type (1) + node_name (32) + timestamp (4) + flags (1) = 74 bytes min
         data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // tag
-        data.extend_from_slice(&[0xAA; 32]); // pubkey
+        data.extend_from_slice(&[0xAA; PUBLIC_KEY_LEN]);
         data.push(1); // adv_type
         let mut name = [0u8; 32];
         name[..5].copy_from_slice(b"Node1");
@@ -2218,7 +2218,7 @@ mod tests {
 
         // Add a pending contact first
         reader.pending_contacts.write().await.push(Contact {
-            public_key: [0u8; 32],
+            public_key: [0u8; PUBLIC_KEY_LEN],
             contact_type: 1,
             flags: 0,
             path_len: 0,
@@ -2369,7 +2369,7 @@ mod tests {
         data.push((4 << 2) | 1);
         data.push(0b00_000000); // no path hops
 
-        data.extend_from_slice(&[0x11; 32]); // pubkey
+        data.extend_from_slice(&[0x11; PUBLIC_KEY_LEN]);
         data.extend_from_slice(&42u32.to_le_bytes()); // timestamp
         data.extend_from_slice(&[0x22; 64]); // signature
         data.push(0x80); // flags: has name only
@@ -2388,7 +2388,7 @@ mod tests {
                 let header = log.header.expect("expected a decoded header");
                 assert_eq!(header.payload_type, PayloadType::Advert);
                 let adv = log.advertisement.expect("expected a decoded advertiser");
-                assert_eq!(adv.public_key, [0x11; 32]);
+                assert_eq!(adv.public_key, [0x11; PUBLIC_KEY_LEN]);
                 assert_eq!(adv.name.as_deref(), Some("Node2"));
             }
             _ => panic!("Expected LogData payload"),
@@ -2480,7 +2480,7 @@ mod tests {
     fn test_dispatch_control_data_discover_resp() {
         let mut data = vec![ControlType::NodeDiscoverResp as u8];
         // Add one entry: 32-byte pubkey + 32-byte name
-        data.extend_from_slice(&[0xAA; 32]);
+        data.extend_from_slice(&[0xAA; PUBLIC_KEY_LEN]);
         let mut name = [0u8; 32];
         name[..4].copy_from_slice(b"Test");
         data.extend_from_slice(&name);

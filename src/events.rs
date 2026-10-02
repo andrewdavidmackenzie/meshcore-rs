@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::packets::{PayloadType, RouteType};
-use crate::{Error, CHANNEL_SECRET_LEN};
+use crate::{Error, CHANNEL_SECRET_LEN, PUBLIC_KEY_LEN};
 
 /// Event types emitted by MeshCore
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,7 +160,7 @@ pub enum EventPayload {
 #[derive(Debug, Clone)]
 pub struct Contact {
     /// 32-byte public key
-    pub public_key: [u8; 32],
+    pub public_key: [u8; PUBLIC_KEY_LEN],
     /// Contact type
     pub contact_type: u8,
     /// Contact flags
@@ -220,7 +220,7 @@ pub struct SelfInfo {
     /// Maximum TX power
     pub max_tx_power: u8,
     /// 32-byte public key
-    pub public_key: [u8; 32],
+    pub public_key: [u8; PUBLIC_KEY_LEN],
     /// Latitude in microdegrees
     pub adv_lat: i32,
     /// Longitude in microdegrees
@@ -446,11 +446,11 @@ pub struct AdvertisementData {
 #[derive(Debug, Clone)]
 pub struct PathUpdateData {
     /// Node public key
-    pub public_key: [u8; 32],
+    pub public_key: [u8; PUBLIC_KEY_LEN],
 }
 
-impl From<[u8; 32]> for PathUpdateData {
-    fn from(public_key: [u8; 32]) -> Self {
+impl From<[u8; PUBLIC_KEY_LEN]> for PathUpdateData {
+    fn from(public_key: [u8; PUBLIC_KEY_LEN]) -> Self {
         Self { public_key }
     }
 }
@@ -549,7 +549,7 @@ pub struct AdvertResponseData {
     /// Tag
     pub tag: [u8; 4],
     /// Public key
-    pub pubkey: [u8; 32],
+    pub pubkey: [u8; PUBLIC_KEY_LEN],
     /// Advertisement type
     pub adv_type: u8,
     /// Node name
@@ -745,7 +745,7 @@ pub struct MeshPacketHeader {
 #[derive(Debug, Clone)]
 pub struct RawAdvertisement {
     /// Advertiser's full 32-byte public key
-    pub public_key: [u8; 32],
+    pub public_key: [u8; PUBLIC_KEY_LEN],
     /// Advertisement timestamp (seconds)
     pub timestamp: u32,
     /// Signature over the advertisement (64 bytes)
@@ -1094,7 +1094,7 @@ mod tests {
 
     #[test]
     fn test_contact_public_key_hex() {
-        let mut public_key = [0u8; 32];
+        let mut public_key = [0u8; PUBLIC_KEY_LEN];
         public_key[0..4].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
         let contact = Contact {
@@ -1115,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_contact_prefix_hex() {
-        let mut public_key = [0u8; 32];
+        let mut public_key = [0u8; PUBLIC_KEY_LEN];
         public_key[0..6].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02]);
 
         let contact = Contact {
@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn test_contact_latitude() {
         let contact = Contact {
-            public_key: [0u8; 32],
+            public_key: [0u8; PUBLIC_KEY_LEN],
             contact_type: 1,
             flags: 0,
             path_len: -1,
@@ -1155,7 +1155,7 @@ mod tests {
     #[test]
     fn test_contact_longitude() {
         let contact = Contact {
-            public_key: [0u8; 32],
+            public_key: [0u8; PUBLIC_KEY_LEN],
             contact_type: 1,
             flags: 0,
             path_len: -1,
@@ -1450,7 +1450,7 @@ mod tests {
             adv_type: 1,
             tx_power: 20,
             max_tx_power: 30,
-            public_key: [0u8; 32],
+            public_key: [0u8; PUBLIC_KEY_LEN],
             adv_lat: 0,
             adv_lon: 0,
             multi_acks: 0,
