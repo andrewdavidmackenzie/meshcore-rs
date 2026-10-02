@@ -316,7 +316,7 @@ pub fn parse_device_info(data: &[u8]) -> Result<DeviceInfoData> {
     };
 
     let field = |p: FirmwareParameter| p.get(data, fw_version_code);
-    let byte = |p| field(p).map(|b| b[0]);
+    let byte = |p| field(p).and_then(|b| b.first().copied());
     let string = |p: FirmwareParameter| field(p).map(|b| read_string(b, 0, p.len));
 
     let max_contacts = byte(DEVICE_INFO_MAX_CONTACTS).map(|n| n.saturating_mul(2));
@@ -1488,9 +1488,11 @@ pub fn parse_path_discovery_response(payload: &[u8]) -> Result<PathDiscoveryResp
 
     // Outbound path
     let out_path_byte = payload[PATH_DISC_OUT_PATH_OFFSET]; // jonesy:allow(bounds) -- checked >= PATH_DISC_MIN_LEN
-    let out_path_hash_len = ((out_path_byte & 0xC0) >> 6) + 1; // jonesy:allow(overflow)
+    let out_path_hash_len = ((out_path_byte & 0xC0) >> 6).wrapping_add(1);
     let out_path_len = out_path_byte & 0x3F;
-    let out_path_bytes = out_path_len as usize * out_path_hash_len as usize; // jonesy:allow(overflow)
+    let out_path_bytes = (out_path_len as usize)
+        .checked_mul(out_path_hash_len as usize)
+        .ok_or_else(|| Error::protocol("PathDiscoveryResponse outbound path overflow"))?;
 
     let out_path_start = PATH_DISC_OUT_PATH_OFFSET + 1; // jonesy:allow(overflow)
     let out_path_end = out_path_start
@@ -1508,11 +1510,15 @@ pub fn parse_path_discovery_response(payload: &[u8]) -> Result<PathDiscoveryResp
     let in_path_byte = *payload
         .get(in_path_byte_offset)
         .ok_or_else(|| Error::protocol("PathDiscoveryResponse missing inbound path byte"))?;
-    let in_path_hash_len = ((in_path_byte & 0xC0) >> 6) + 1; // jonesy:allow(overflow)
+    let in_path_hash_len = ((in_path_byte & 0xC0) >> 6).wrapping_add(1);
     let in_path_len = in_path_byte & 0x3F;
-    let in_path_bytes = in_path_len as usize * in_path_hash_len as usize; // jonesy:allow(overflow)
+    let in_path_bytes = (in_path_len as usize)
+        .checked_mul(in_path_hash_len as usize)
+        .ok_or_else(|| Error::protocol("PathDiscoveryResponse inbound path overflow"))?;
 
-    let in_path_start = in_path_byte_offset + 1; // jonesy:allow(overflow)
+    let in_path_start = in_path_byte_offset
+        .checked_add(1)
+        .ok_or_else(|| Error::protocol("PathDiscoveryResponse inbound path start overflow"))?;
     let in_path_end = in_path_start
         .checked_add(in_path_bytes)
         .ok_or_else(|| Error::protocol("PathDiscoveryResponse inbound path overflow"))?;
