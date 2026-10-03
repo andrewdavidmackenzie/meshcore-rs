@@ -1400,6 +1400,8 @@ mod tests {
         AUTO_ADD_CHAT, AUTO_ADD_OVERWRITE_OLDEST, AUTO_ADD_REPEATER, AUTO_ADD_ROOM_SERVER,
     };
 
+    const KEY: [u8; PUBLIC_KEY_LEN] = [7; PUBLIC_KEY_LEN];
+
     // ========== Destination Tests ==========
 
     #[test]
@@ -2024,7 +2026,7 @@ mod tests {
 
     fn next_contact() -> MeshCoreEvent {
         let c = Contact {
-            public_key: [7; PUBLIC_KEY_LEN],
+            public_key: KEY,
             contact_type: 1,
             flags: 0,
             path_len: 2,
@@ -2043,18 +2045,15 @@ mod tests {
         let (handler, rx, dispatcher) = create_test_handler();
         let frames = answer(rx, dispatcher, next_contact());
 
-        let got = handler
-            .get_contact_by_key(&[7; PUBLIC_KEY_LEN])
-            .await
-            .unwrap();
+        let got = handler.get_contact_by_key(&KEY).await.unwrap();
         drop(handler);
 
-        assert_eq!(got.public_key, [7; PUBLIC_KEY_LEN]);
+        assert_eq!(got.public_key, KEY);
         assert_eq!(got.path_len, 2);
         assert_eq!(got.out_path, [1, 2]);
         assert_eq!(got.adv_name, "c");
         let mut want = vec![CMD_GET_CONTACT_BY_KEY];
-        want.extend_from_slice(&[7; PUBLIC_KEY_LEN]);
+        want.extend_from_slice(&KEY);
         assert_eq!(frames.await.unwrap(), vec![want]);
     }
 
@@ -2062,7 +2061,7 @@ mod tests {
     async fn get_contact_by_key_not_found() {
         let (handler, rx, dispatcher) = create_test_handler();
         let _frames = answer(rx, dispatcher, MeshCoreEvent::error("\u{2}"));
-        let r = handler.get_contact_by_key(&[7; PUBLIC_KEY_LEN]).await;
+        let r = handler.get_contact_by_key(&KEY).await;
         assert!(matches!(r, Err(Error::Device(m)) if m == "\u{2}"));
     }
 
@@ -2071,7 +2070,7 @@ mod tests {
         let (handler, rx, dispatcher) = create_test_handler();
         let event = MeshCoreEvent::new(EventType::NextContact, EventPayload::None);
         let _frames = answer(rx, dispatcher, event);
-        let r = handler.get_contact_by_key(&[7; PUBLIC_KEY_LEN]).await;
+        let r = handler.get_contact_by_key(&KEY).await;
         assert!(matches!(r, Err(Error::Protocol(_))));
     }
 
