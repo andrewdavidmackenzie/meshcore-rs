@@ -184,6 +184,7 @@ traffic never triggers it; use `LogData` for general monitoring as above.
 ### Contact Commands
 
 - `get_contacts()` - Get contact list
+- `get_contact_by_key()` - Get one contact by public key
 - `add_contact()` - Add a contact
 - `remove_contact()` - Remove a contact
 - `export_contact()` - Export contact as URI
@@ -226,7 +227,6 @@ assumed).
 | 25 (0x19) | `SEND_RAW_DATA` | Send an opaque `RAW_CUSTOM` payload to a peer | companion-v1.0.0a | ✅ `send_raw_data()` |
 | 27 (0x1B) | `SEND_STATUS_REQ` | Request a contact's status | companion-v1.0.0a | ✅ `send_statusreq()` |
 | 28 (0x1C) | `HAS_CONNECTION` | Whether the node has an active BLE/serial companion connection | companion-v1.0.0a | ✅ `has_connection()` |
-| 30 (0x1E) | `GET_CONTACT_BY_KEY` | Look up a contact by its full public key | companion-v1.2.0 | ✅ `get_contact_by_key()` |
 | 36 (0x24) | `SEND_TRACE_PATH` | Trace/test the route to a node | companion-v1.4.0 | ✅ `send_trace()` |
 | 37 (0x25) | `SET_DEVICE_PIN` | Set a device PIN (BLE pairing) | companion-v1.4.0 | ✅ `set_devicepin()` |
 | 38 (0x26) | `SET_OTHER_PARAMS` | Legacy `manual_add_contacts` flag, telemetry mode, advert location policy, multi-acks | companion-v1.5.0 | ✅ `set_other_params()`/`set_other_params_from_infos()` |

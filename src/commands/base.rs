@@ -50,7 +50,6 @@ const CMD_SEND_STATUS_REQ: u8 = 27;
 #[allow(dead_code)]
 const CMD_HAS_CONNECTION: u8 = 28;
 const CMD_LOGOUT: u8 = 29;
-#[allow(dead_code)]
 const CMD_GET_CONTACT_BY_KEY: u8 = 30;
 const CMD_GET_CHANNEL: u8 = 31;
 const CMD_SET_CHANNEL: u8 = 32;
@@ -853,6 +852,32 @@ impl CommandHandler {
         }
     }
 
+    /// Get one contact by public key
+    ///
+    /// Format: [CMD_GET_CONTACT_BY_KEY=0x1E][pubkey: 32]
+    pub async fn get_contact_by_key(&self, public_key: &[u8; PUBLIC_KEY_LEN]) -> Result<Contact> {
+        let mut data = vec![CMD_GET_CONTACT_BY_KEY];
+        data.extend_from_slice(public_key);
+        let event = self
+            .send_multi(
+                &data,
+                &[EventType::NextContact, EventType::Error],
+                self.default_timeout,
+            )
+            .await?;
+
+        if event.event_type == EventType::Error {
+            return device_error(event.payload);
+        }
+        let EventPayload::Contact(contact) = event.payload else {
+            return Err(Error::protocol("Unexpected response to get contact"));
+        };
+        if contact.public_key != *public_key {
+            return Err(Error::protocol("Contact does not match requested key"));
+        }
+        Ok(contact)
+    }
+
     /// Add or update a contact
     ///
     /// Format: [CMD_ADD_UPDATE_CONTACT=0x09][pubkey: 32][type: u8][flags: u8][path_len: u8][path: 64][name: 32][timestamp: u32][lat: i32][lon: i32]
@@ -1374,6 +1399,8 @@ mod tests {
     use crate::{
         AUTO_ADD_CHAT, AUTO_ADD_OVERWRITE_OLDEST, AUTO_ADD_REPEATER, AUTO_ADD_ROOM_SERVER,
     };
+
+    const KEY: [u8; PUBLIC_KEY_LEN] = [7; PUBLIC_KEY_LEN];
 
     // ========== Destination Tests ==========
 
@@ -1995,6 +2022,64 @@ mod tests {
 
         let want = vec![vec![CMD_SET_PATH_HASH_MODE, 0, 1]];
         assert_eq!(frames.await.unwrap(), want);
+    }
+
+    fn next_contact() -> MeshCoreEvent {
+        let c = Contact {
+            public_key: KEY,
+            contact_type: 1,
+            flags: 0,
+            path_len: 2,
+            out_path: vec![1, 2],
+            adv_name: "c".to_string(),
+            last_advert: 0,
+            adv_lat: 0,
+            adv_lon: 0,
+            last_modification_timestamp: 0,
+        };
+        MeshCoreEvent::new(EventType::NextContact, EventPayload::Contact(c))
+    }
+
+    #[tokio::test]
+    async fn get_contact_by_key() {
+        let (handler, rx, dispatcher) = create_test_handler();
+        let frames = answer(rx, dispatcher, next_contact());
+
+        let got = handler.get_contact_by_key(&KEY).await.unwrap();
+        drop(handler);
+
+        assert_eq!(got.public_key, KEY);
+        assert_eq!(got.path_len, 2);
+        assert_eq!(got.out_path, [1, 2]);
+        assert_eq!(got.adv_name, "c");
+        let mut want = vec![CMD_GET_CONTACT_BY_KEY];
+        want.extend_from_slice(&KEY);
+        assert_eq!(frames.await.unwrap(), vec![want]);
+    }
+
+    #[tokio::test]
+    async fn get_contact_by_key_not_found() {
+        let (handler, rx, dispatcher) = create_test_handler();
+        let _frames = answer(rx, dispatcher, MeshCoreEvent::error("\u{2}"));
+        let r = handler.get_contact_by_key(&KEY).await;
+        assert!(matches!(r, Err(Error::Device(m)) if m == "\u{2}"));
+    }
+
+    #[tokio::test]
+    async fn get_contact_by_key_bad_payload() {
+        let (handler, rx, dispatcher) = create_test_handler();
+        let event = MeshCoreEvent::new(EventType::NextContact, EventPayload::None);
+        let _frames = answer(rx, dispatcher, event);
+        let r = handler.get_contact_by_key(&KEY).await;
+        assert!(matches!(r, Err(Error::Protocol(_))));
+    }
+
+    #[tokio::test]
+    async fn get_contact_by_key_wrong_contact() {
+        let (handler, rx, dispatcher) = create_test_handler();
+        let _frames = answer(rx, dispatcher, next_contact());
+        let r = handler.get_contact_by_key(&[8; PUBLIC_KEY_LEN]).await;
+        assert!(matches!(r, Err(Error::Protocol(_))));
     }
 
     #[tokio::test]
