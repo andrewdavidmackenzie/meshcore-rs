@@ -133,20 +133,21 @@ impl MeshCore {
             })
             .await;
 
-        let contacts2 = self.contacts.clone();
-
-        // Subscribe to new contacts
-        self.dispatcher
-            .subscribe(EventType::NewContact, HashMap::new(), move |event| {
-                if let EventPayload::Contact(contact) = event.payload {
-                    let contacts = contacts2.clone();
-                    tokio::spawn(async move {
-                        let key = crate::parsing::hex_encode(&contact.public_key);
-                        contacts.write().await.insert(key, contact);
-                    });
-                }
-            })
-            .await;
+        // Subscribe to new and individually fetched contacts
+        for kind in [EventType::NewContact, EventType::NextContact] {
+            let contacts = self.contacts.clone();
+            self.dispatcher
+                .subscribe(kind, HashMap::new(), move |event| {
+                    if let EventPayload::Contact(contact) = event.payload {
+                        let contacts = contacts.clone();
+                        tokio::spawn(async move {
+                            let key = crate::parsing::hex_encode(&contact.public_key);
+                            contacts.write().await.insert(key, contact);
+                        });
+                    }
+                })
+                .await;
+        }
     }
 
     /// Check if connected
@@ -974,15 +975,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_setup_event_handlers_new_contact() {
+        caches_contact(EventType::NewContact).await;
+    }
+
+    #[tokio::test]
+    async fn setup_event_handlers_next_contact() {
+        caches_contact(EventType::NextContact).await;
+    }
+
+    async fn caches_contact(kind: EventType) {
         let mc = create_test_meshcore();
         mc.setup_event_handlers().await;
 
         let contact = make_contact("NewPeer", [0x22; PUBLIC_KEY_LEN]);
         mc.dispatcher()
-            .emit(MeshCoreEvent::new(
-                EventType::NewContact,
-                EventPayload::Contact(contact),
-            ))
+            .emit(MeshCoreEvent::new(kind, EventPayload::Contact(contact)))
             .await;
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -991,6 +998,22 @@ mod tests {
         assert_eq!(contacts.len(), 1);
         let key_hex = crate::parsing::hex_encode(&[0x22; PUBLIC_KEY_LEN]);
         assert!(contacts.contains_key(&key_hex));
+    }
+
+    #[tokio::test]
+    async fn setup_event_handlers_contact_bad_payload() {
+        let mc = create_test_meshcore();
+        mc.setup_event_handlers().await;
+
+        for kind in [EventType::NewContact, EventType::NextContact] {
+            mc.dispatcher()
+                .emit(MeshCoreEvent::new(kind, EventPayload::None))
+                .await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(mc.contacts().await.is_empty());
     }
 
     // ========== read_task tests ==========
