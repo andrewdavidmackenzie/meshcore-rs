@@ -718,7 +718,7 @@ mod tests {
         assert!(!mc.is_connected().await);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_disconnect_emits_event() {
         let mc = create_test_meshcore();
         *mc.connected.write().await = true;
@@ -768,7 +768,7 @@ mod tests {
 
     // ========== subscribe / wait_for_event tests ==========
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_subscribe_receives_events() {
         let mc = create_test_meshcore();
         let received = Arc::new(RwLock::new(false));
@@ -792,7 +792,7 @@ mod tests {
         assert!(*received.read().await);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_wait_for_event_success() {
         let mc = create_test_meshcore();
         let dispatcher = mc.dispatcher().clone();
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(result.unwrap().event_type, EventType::Battery);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_wait_for_event_timeout() {
         let mc = create_test_meshcore();
         let result = mc
@@ -830,7 +830,7 @@ mod tests {
 
     // ========== event_stream tests ==========
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_event_stream_receives_events() {
         let mc = create_test_meshcore();
         let mut stream = mc.event_stream();
@@ -850,7 +850,7 @@ mod tests {
         assert_eq!(event.event_type, EventType::Ok);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_event_stream_filtered_only_matching() {
         let mc = create_test_meshcore();
         let mut stream = mc.event_stream_filtered(EventType::Battery);
@@ -904,7 +904,7 @@ mod tests {
 
     // ========== setup_event_handlers tests ==========
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_setup_event_handlers_contacts() {
         let mc = create_test_meshcore();
         mc.setup_event_handlers().await;
@@ -926,7 +926,7 @@ mod tests {
         assert!(!mc.contacts_dirty().await);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_setup_event_handlers_self_info() {
         let mc = create_test_meshcore();
         mc.setup_event_handlers().await;
@@ -949,7 +949,7 @@ mod tests {
         assert_eq!(self_info.unwrap().name, "TestDevice");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_setup_event_handlers_current_time() {
         let mc = create_test_meshcore();
         mc.setup_event_handlers().await;
@@ -967,7 +967,7 @@ mod tests {
         assert_eq!(time, Some(1234567890));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_setup_event_handlers_new_contact() {
         caches_contact(EventType::NewContact).await;
     }

@@ -29,7 +29,7 @@ ble = ["btleplug"]
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "test-util"] }
 
 # Declared explicitly so `required-features` can be set; without it Cargo
 # auto-discovers this example and tries to build it even when `serial` is off,
