@@ -1482,6 +1482,7 @@ impl CommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use tokio::time::timeout;
 
     use crate::{
@@ -1497,26 +1498,26 @@ mod tests {
     fn test_destination_from_bytes_slice() {
         let bytes: &[u8] = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
         let dest: Destination = bytes.into();
-        assert!(matches!(dest, Destination::Bytes(_)));
+        assert_matches!(dest, Destination::Bytes(_));
     }
 
     #[test]
     fn test_destination_from_vec() {
         let bytes = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
         let dest: Destination = bytes.into();
-        assert!(matches!(dest, Destination::Bytes(_)));
+        assert_matches!(dest, Destination::Bytes(_));
     }
 
     #[test]
     fn test_destination_from_str() {
         let dest: Destination = "0102030405060708".into();
-        assert!(matches!(dest, Destination::Hex(_)));
+        assert_matches!(dest, Destination::Hex(_));
     }
 
     #[test]
     fn test_destination_from_string() {
         let dest: Destination = String::from("0102030405060708").into();
-        assert!(matches!(dest, Destination::Hex(_)));
+        assert_matches!(dest, Destination::Hex(_));
     }
 
     #[test]
@@ -1528,7 +1529,7 @@ mod tests {
             ..Default::default()
         };
         let dest: Destination = contact.into();
-        assert!(matches!(dest, Destination::Contact(_)));
+        assert_matches!(dest, Destination::Contact(_));
     }
 
     #[test]
@@ -1540,7 +1541,7 @@ mod tests {
             ..Default::default()
         };
         let dest: Destination = (&contact).into();
-        assert!(matches!(dest, Destination::Contact(_)));
+        assert_matches!(dest, Destination::Contact(_));
     }
 
     #[test]
@@ -1633,7 +1634,7 @@ mod tests {
     fn test_destination_clone() {
         let dest = Destination::Hex("0102030405060708".to_string());
         let cloned = dest.clone();
-        assert!(matches!(cloned, Destination::Hex(_)));
+        assert_matches!(cloned, Destination::Hex(_));
     }
 
     #[test]
@@ -2126,7 +2127,7 @@ mod tests {
         let (handler, rx, dispatcher) = create_test_handler();
         let _frames = answer(rx, dispatcher, MeshCoreEvent::error("\u{2}"));
         let r = handler.get_contact_by_key(&KEY).await;
-        assert!(matches!(r, Err(Error::Device(m)) if m == "\u{2}"));
+        assert_matches!(r, Err(Error::Device(m)) if m == "\u{2}");
     }
 
     #[tokio::test]
@@ -2135,7 +2136,7 @@ mod tests {
         let event = MeshCoreEvent::new(EventType::NextContact, EventPayload::None);
         let _frames = answer(rx, dispatcher, event);
         let r = handler.get_contact_by_key(&KEY).await;
-        assert!(matches!(r, Err(Error::Protocol(_))));
+        assert_matches!(r, Err(Error::Protocol(_)));
     }
 
     #[tokio::test]
@@ -2143,7 +2144,7 @@ mod tests {
         let (handler, rx, dispatcher) = create_test_handler();
         let _frames = answer(rx, dispatcher, next_contact_event());
         let r = handler.get_contact_by_key(&[8; PUBLIC_KEY_LEN]).await;
-        assert!(matches!(r, Err(Error::Protocol(_))));
+        assert_matches!(r, Err(Error::Protocol(_)));
     }
 
     // Using a fake device that always returns failure, check that any operation returns an error.
@@ -2367,7 +2368,7 @@ mod tests {
         });
 
         let result = handler.get_stats(StatsCategory::Core).await;
-        assert!(matches!(result, Err(Error::Protocol(_))));
+        assert_matches!(result, Err(Error::Protocol(_)));
     }
 
     #[tokio::test]
@@ -2387,7 +2388,7 @@ mod tests {
         });
 
         let result = handler.get_stats(StatsCategory::Core).await;
-        assert!(matches!(result, Err(Error::Device(_))));
+        assert_matches!(result, Err(Error::Device(_)));
     }
 
     #[tokio::test]

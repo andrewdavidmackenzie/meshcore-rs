@@ -1678,6 +1678,7 @@ pub fn parse_path_discovery_response(payload: &[u8]) -> Result<PathDiscoveryResp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn test_read_u16_le() {
@@ -2780,18 +2781,18 @@ mod tests {
     #[test]
     fn test_parse_stats_unknown_category_errors() {
         let data = [99, 0xFF];
-        assert!(matches!(parse_stats(&data), Err(Error::Protocol(_))));
+        assert_matches!(parse_stats(&data), Err(Error::Protocol(_)));
     }
 
     // ========== parse_core_stats tests ==========
 
     #[test]
     fn test_parse_core_stats_too_short() {
-        assert!(matches!(parse_core_stats(&[]), Err(Error::Protocol(_))));
-        assert!(matches!(
+        assert_matches!(parse_core_stats(&[]), Err(Error::Protocol(_)));
+        assert_matches!(
             parse_core_stats(&[0; 8]), // need 9
             Err(Error::Protocol(_))
-        ));
+        );
     }
 
     #[test]
@@ -2822,11 +2823,11 @@ mod tests {
 
     #[test]
     fn test_parse_radio_stats_too_short() {
-        assert!(matches!(parse_radio_stats(&[]), Err(Error::Protocol(_))));
-        assert!(matches!(
+        assert_matches!(parse_radio_stats(&[]), Err(Error::Protocol(_)));
+        assert_matches!(
             parse_radio_stats(&[0; 11]), // need 12
             Err(Error::Protocol(_))
-        ));
+        );
     }
 
     #[test]
@@ -2860,11 +2861,11 @@ mod tests {
 
     #[test]
     fn test_parse_packet_stats_too_short() {
-        assert!(matches!(parse_packet_stats(&[]), Err(Error::Protocol(_))));
-        assert!(matches!(
+        assert_matches!(parse_packet_stats(&[]), Err(Error::Protocol(_)));
+        assert_matches!(
             parse_packet_stats(&[0; 23]), // need at least 24
             Err(Error::Protocol(_))
-        ));
+        );
     }
 
     #[test]
@@ -2872,9 +2873,10 @@ mod tests {
         // 25, 26, 27 bytes: past the 24-byte legacy frame but short of the
         // 28-byte recv_errors:u32 field -- a truncated field, not a legacy frame.
         for len in [25, 26, 27] {
-            assert!(
-                matches!(parse_packet_stats(&vec![0; len]), Err(Error::Protocol(_))),
-                "expected Err(Error::Protocol) for len={len}"
+            assert_matches!(
+                parse_packet_stats(&vec![0; len]),
+                Err(Error::Protocol(_)),
+                "len={len}"
             );
         }
     }

@@ -1073,6 +1073,7 @@ impl Default for EventDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -1080,7 +1081,7 @@ mod tests {
     fn test_event_new() {
         let event = MeshCoreEvent::new(EventType::Ok, EventPayload::None);
         assert_eq!(event.event_type, EventType::Ok);
-        assert!(matches!(event.payload, EventPayload::None));
+        assert_matches!(event.payload, EventPayload::None);
         assert!(event.attributes.is_empty());
     }
 
@@ -1098,7 +1099,7 @@ mod tests {
     fn test_event_ok() {
         let event = MeshCoreEvent::ok();
         assert_eq!(event.event_type, EventType::Ok);
-        assert!(matches!(event.payload, EventPayload::None));
+        assert_matches!(event.payload, EventPayload::None);
     }
 
     #[test]

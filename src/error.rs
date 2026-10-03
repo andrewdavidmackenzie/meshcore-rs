@@ -82,39 +82,40 @@ impl Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn test_connection_error() {
         let err = Error::connection("test connection error");
-        assert!(matches!(err, Error::Connection(_)));
+        assert_matches!(err, Error::Connection(_));
         assert_eq!(err.to_string(), "Connection error: test connection error");
     }
 
     #[test]
     fn test_protocol_error() {
         let err = Error::protocol("invalid packet");
-        assert!(matches!(err, Error::Protocol(_)));
+        assert_matches!(err, Error::Protocol(_));
         assert_eq!(err.to_string(), "Protocol error: invalid packet");
     }
 
     #[test]
     fn test_timeout_error() {
         let err = Error::timeout("response");
-        assert!(matches!(err, Error::Timeout(_)));
+        assert_matches!(err, Error::Timeout(_));
         assert_eq!(err.to_string(), "Timeout waiting for response");
     }
 
     #[test]
     fn test_device_error() {
         let err = Error::device("busy");
-        assert!(matches!(err, Error::Device(_)));
+        assert_matches!(err, Error::Device(_));
         assert_eq!(err.to_string(), "Device error: busy");
     }
 
     #[test]
     fn test_invalid_param_error() {
         let err = Error::invalid_param("bad value");
-        assert!(matches!(err, Error::InvalidParameter(_)));
+        assert_matches!(err, Error::InvalidParameter(_));
         assert_eq!(err.to_string(), "Invalid parameter: bad value");
     }
 
@@ -140,7 +141,7 @@ mod tests {
     fn test_from_io_error() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
         let err: Error = io_err.into();
-        assert!(matches!(err, Error::Io(_)));
+        assert_matches!(err, Error::Io(_));
         assert!(err.to_string().contains("I/O error"));
     }
 
