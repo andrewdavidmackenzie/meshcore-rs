@@ -4,4 +4,4 @@
 
 mod base;
 
-pub use base::{CommandHandler, Destination, DEFAULT_TIMEOUT};
+pub use base::{CommandHandler, Destination, OtherParams, DEFAULT_TIMEOUT};
