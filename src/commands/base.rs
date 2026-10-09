@@ -1510,14 +1510,8 @@ mod tests {
         let contact = Contact {
             public_key: [0xAA; PUBLIC_KEY_LEN],
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: vec![],
             adv_name: "Test".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         };
         let dest: Destination = contact.into();
         assert!(matches!(dest, Destination::Contact(_)));
@@ -1528,14 +1522,8 @@ mod tests {
         let contact = Contact {
             public_key: [0xBB; PUBLIC_KEY_LEN],
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: vec![],
             adv_name: "Test".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         };
         let dest: Destination = (&contact).into();
         assert!(matches!(dest, Destination::Contact(_)));
@@ -1576,14 +1564,8 @@ mod tests {
         let contact = Contact {
             public_key,
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: vec![],
             adv_name: "Test".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         };
         let dest: Destination = contact.into();
         let prefix = dest.prefix().unwrap();
@@ -1625,14 +1607,8 @@ mod tests {
         let contact = Contact {
             public_key: [0xCC; PUBLIC_KEY_LEN],
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: vec![],
             adv_name: "Test".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         };
         let dest: Destination = contact.into();
         let key = dest.public_key().unwrap();
@@ -2099,26 +2075,25 @@ mod tests {
         assert_eq!(frames.await.unwrap(), want);
     }
 
-    fn next_contact() -> MeshCoreEvent {
-        let c = Contact {
+    fn contact() -> Contact {
+        Contact {
             public_key: KEY,
             contact_type: 1,
-            flags: 0,
             path_len: 2,
             out_path: vec![1, 2],
             adv_name: "c".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
-        };
-        MeshCoreEvent::new(EventType::NextContact, EventPayload::Contact(c))
+            ..Default::default()
+        }
+    }
+
+    fn next_contact_event() -> MeshCoreEvent {
+        MeshCoreEvent::new(EventType::NextContact, EventPayload::Contact(contact()))
     }
 
     #[tokio::test]
     async fn get_contact_by_key() {
         let (handler, rx, dispatcher) = create_test_handler();
-        let frames = answer(rx, dispatcher, next_contact());
+        let frames = answer(rx, dispatcher, next_contact_event());
 
         let got = handler.get_contact_by_key(&KEY).await.unwrap();
         drop(handler);
@@ -2152,11 +2127,12 @@ mod tests {
     #[tokio::test]
     async fn get_contact_by_key_wrong_contact() {
         let (handler, rx, dispatcher) = create_test_handler();
-        let _frames = answer(rx, dispatcher, next_contact());
+        let _frames = answer(rx, dispatcher, next_contact_event());
         let r = handler.get_contact_by_key(&[8; PUBLIC_KEY_LEN]).await;
         assert!(matches!(r, Err(Error::Protocol(_))));
     }
 
+    // Using a fake device that always returns failure, check that any operation returns an error.
     #[tokio::test]
     async fn setters_return_device_errors() {
         let (handler, rx, dispatcher) = create_test_handler();
@@ -2181,6 +2157,19 @@ mod tests {
             .set_other_params(OtherParams::default())
             .await
             .map(drop)));
+        let c = contact();
+        assert!(bad(handler.add_contact(&c).await));
+        assert!(bad(handler.remove_contact(&c).await));
+        assert!(bad(handler.import_contact(&[1]).await));
+        assert!(bad(handler.send_logout(&c).await));
+        assert!(bad(handler.send_advert(true).await.map(drop)));
+        assert!(bad(handler.factory_reset().await));
+        assert!(bad(handler.set_custom_var("k", "v").await));
+        assert!(bad(handler.set_autoadd_config(0, None).await));
+        assert!(bad(handler.set_flood_scope(None).await));
+        assert!(bad(handler.send_control_data(&[1]).await));
+        assert!(bad(handler.send_channel_msg(1, "m", None).await));
+        assert!(bad(handler.sign_data(&[1]).await));
     }
 
     #[tokio::test]
@@ -2475,14 +2464,9 @@ mod tests {
             let contacts = vec![Contact {
                 public_key: [0xAA; PUBLIC_KEY_LEN],
                 contact_type: 1,
-                flags: 0,
                 path_len: 2,
-                out_path: vec![],
                 adv_name: "Contact1".to_string(),
-                last_advert: 0,
-                adv_lat: 0,
-                adv_lon: 0,
-                last_modification_timestamp: 0,
+                ..Default::default()
             }];
             dispatcher_clone
                 .emit(MeshCoreEvent::new(

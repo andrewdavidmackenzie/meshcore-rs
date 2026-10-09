@@ -743,16 +743,10 @@ mod tests {
 
         // Add some fake contacts
         *reader.pending_contacts.write().await = Some(vec![Contact {
-            public_key: [0u8; PUBLIC_KEY_LEN],
             contact_type: 1,
-            flags: 0,
             path_len: 0,
-            out_path: vec![],
             adv_name: "Old".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         }]);
 
         reader
@@ -2301,16 +2295,10 @@ mod tests {
 
         // Add a pending contact first
         *reader.pending_contacts.write().await = Some(vec![Contact {
-            public_key: [0u8; PUBLIC_KEY_LEN],
             contact_type: 1,
-            flags: 0,
             path_len: 0,
-            out_path: vec![],
             adv_name: "Test".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         }]);
 
         let mut data = vec![PacketType::ContactEnd as u8];

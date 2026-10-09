@@ -184,6 +184,23 @@ pub struct Contact {
     pub last_modification_timestamp: u32,
 }
 
+impl Default for Contact {
+    fn default() -> Self {
+        Self {
+            public_key: [0; PUBLIC_KEY_LEN],
+            contact_type: 0,
+            flags: 0,
+            path_len: -1,
+            out_path: Vec::new(),
+            adv_name: String::new(),
+            last_advert: 0,
+            adv_lat: 0,
+            adv_lon: 0,
+            last_modification_timestamp: 0,
+        }
+    }
+}
+
 impl Contact {
     /// Get the 6-byte public key prefix
     pub fn prefix(&self) -> [u8; 6] {
@@ -1097,14 +1114,8 @@ mod tests {
                 0x1D, 0x1E, 0x1F, 0x20,
             ],
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: Vec::new(),
             adv_name: "Test".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         };
 
         assert_eq!(contact.prefix(), [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
@@ -1118,14 +1129,8 @@ mod tests {
         let contact = Contact {
             public_key,
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: Vec::new(),
             adv_name: "Test".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         };
 
         assert!(contact.public_key_hex().starts_with("deadbeef"));
@@ -1139,14 +1144,8 @@ mod tests {
         let contact = Contact {
             public_key,
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: Vec::new(),
             adv_name: "Test".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         };
 
         assert_eq!(contact.prefix_hex(), "deadbeef0102");
@@ -1155,16 +1154,10 @@ mod tests {
     #[test]
     fn test_contact_latitude() {
         let contact = Contact {
-            public_key: [0u8; PUBLIC_KEY_LEN],
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: Vec::new(),
             adv_name: "Test".to_string(),
-            last_advert: 0,
             adv_lat: 37774900, // 37.7749 degrees
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         };
 
         assert!((contact.latitude() - 37.7749).abs() < 0.0001);
@@ -1173,16 +1166,10 @@ mod tests {
     #[test]
     fn test_contact_longitude() {
         let contact = Contact {
-            public_key: [0u8; PUBLIC_KEY_LEN],
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: Vec::new(),
             adv_name: "Test".to_string(),
-            last_advert: 0,
-            adv_lat: 0,
             adv_lon: -122419400, // -122.4194 degrees
-            last_modification_timestamp: 0,
+            ..Default::default()
         };
 
         assert!((contact.longitude() - (-122.4194)).abs() < 0.0001);

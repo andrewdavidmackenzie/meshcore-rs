@@ -470,14 +470,8 @@ mod tests {
         Contact {
             public_key,
             contact_type: 1,
-            flags: 0,
-            path_len: -1,
-            out_path: vec![],
             adv_name: name.to_string(),
-            last_advert: 0,
-            adv_lat: 0,
-            adv_lon: 0,
-            last_modification_timestamp: 0,
+            ..Default::default()
         }
     }
 

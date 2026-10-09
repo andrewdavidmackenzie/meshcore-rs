@@ -61,14 +61,8 @@ async fn run(args: ConnectionArgs) -> Result<(), Box<dyn std::error::Error>> {
     let contact = Contact {
         public_key: TEST_PUBLIC_KEY,
         contact_type: 1, // CLI/Chat, per the firmware's CONTACT_TYPENAMES
-        flags: 0,
-        path_len: -1, // unknown route: flood
-        out_path: Vec::new(),
         adv_name: TEST_CONTACT_NAME.to_string(),
-        last_advert: 0,
-        adv_lat: 0,
-        adv_lon: 0,
-        last_modification_timestamp: 0,
+        ..Default::default()
     };
 
     println!("\nAdding test contact {TEST_CONTACT_NAME:?}...");
