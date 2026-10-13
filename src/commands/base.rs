@@ -10,7 +10,8 @@ use crate::packets::BinaryReqType;
 use crate::parsing::{hex_decode, hex_encode, to_microdegrees};
 use crate::reader::MessageReader;
 use crate::{
-    Error, Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, MAX_CHANNEL_DATA_LEN, PUBLIC_KEY_LEN,
+    DeviceError, Error, Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, MAX_CHANNEL_DATA_LEN,
+    PUBLIC_KEY_LEN,
 };
 
 /// Default command timeout
@@ -201,8 +202,8 @@ pub struct CommandHandler {
 /// Convert the payload of an `Error` event into `Error::Device`
 fn device_error<T>(payload: EventPayload) -> Result<T> {
     match payload {
-        EventPayload::String(msg) => Err(Error::device(msg)),
-        _ => Err(Error::device("Unknown error")),
+        EventPayload::DeviceError(code) => Err(code.into()),
+        _ => Err(DeviceError::Unspecified.into()),
     }
 }
 
@@ -1075,10 +1076,7 @@ impl CommandHandler {
             .await?;
 
         if event.event_type == EventType::Error {
-            return match event.payload {
-                EventPayload::String(error_message) => Err(Error::protocol(error_message)),
-                _ => Err(Error::protocol("Unexpected response to send_msg")),
-            };
+            return device_error(event.payload);
         }
 
         match event.payload {
@@ -1472,7 +1470,8 @@ mod tests {
     use tokio::time::timeout;
 
     use crate::{
-        AUTO_ADD_CHAT, AUTO_ADD_OVERWRITE_OLDEST, AUTO_ADD_REPEATER, AUTO_ADD_ROOM_SERVER,
+        PacketType, AUTO_ADD_CHAT, AUTO_ADD_OVERWRITE_OLDEST, AUTO_ADD_REPEATER,
+        AUTO_ADD_ROOM_SERVER,
     };
 
     const KEY: [u8; PUBLIC_KEY_LEN] = [7; PUBLIC_KEY_LEN];
@@ -1785,7 +1784,9 @@ mod tests {
         // Emit an error event
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(5)).await;
-            dispatcher.emit(MeshCoreEvent::error("test")).await;
+            dispatcher
+                .emit(MeshCoreEvent::error(DeviceError::NotFound))
+                .await;
         });
 
         let result = handler
@@ -1822,7 +1823,7 @@ mod tests {
         tokio::spawn(async move {
             let _sent = rx.recv().await;
             dispatcher_clone
-                .emit(MeshCoreEvent::error("device busy"))
+                .emit(MeshCoreEvent::error(DeviceError::BadState))
                 .await;
         });
 
@@ -1977,15 +1978,17 @@ mod tests {
 
         tokio::spawn(async move {
             rx.recv().await.unwrap();
-            dispatcher.emit(MeshCoreEvent::error("Bad name")).await;
+            dispatcher
+                .emit(MeshCoreEvent::error(DeviceError::IllegalArgument))
+                .await;
         });
 
         let result = timeout(Duration::from_secs(2), handler.set_name("MyNode"))
             .await
             .expect("setter should not wait for the default timeout");
         match result {
-            Err(Error::Device(msg)) => assert_eq!(msg, "Bad name"),
-            other => panic!("expected Err(Error::Device(\"Bad name\")), got {other:?}"),
+            Err(Error::Device(code)) => assert_eq!(code, DeviceError::IllegalArgument),
+            other => panic!("expected Err(Error::Device(IllegalArgument)), got {other:?}"),
         }
     }
 
@@ -2110,9 +2113,9 @@ mod tests {
     #[tokio::test]
     async fn get_contact_by_key_not_found() {
         let (handler, rx, dispatcher) = create_test_handler();
-        let _frames = answer(rx, dispatcher, MeshCoreEvent::error("\u{2}"));
+        let _frames = answer(rx, dispatcher, MeshCoreEvent::error(DeviceError::NotFound));
         let r = handler.get_contact_by_key(&KEY).await;
-        assert!(matches!(r, Err(Error::Device(m)) if m == "\u{2}"));
+        assert!(matches!(r, Err(Error::Device(DeviceError::NotFound))));
     }
 
     #[tokio::test]
@@ -2136,8 +2139,8 @@ mod tests {
     #[tokio::test]
     async fn setters_return_device_errors() {
         let (handler, rx, dispatcher) = create_test_handler();
-        let _frames = answer(rx, dispatcher, MeshCoreEvent::error("bad"));
-        let bad = |r: Result<()>| matches!(r, Err(Error::Device(m)) if m == "bad");
+        let _frames = answer(rx, dispatcher, MeshCoreEvent::error(DeviceError::TableFull));
+        let bad = |r: Result<()>| matches!(r, Err(Error::Device(DeviceError::TableFull)));
 
         assert!(bad(handler.set_time(1).await.map(drop)));
         assert!(bad(handler.set_name("n").await.map(drop)));
@@ -2170,6 +2173,37 @@ mod tests {
         assert!(bad(handler.send_control_data(&[1]).await));
         assert!(bad(handler.send_channel_msg(1, "m", None).await));
         assert!(bad(handler.sign_data(&[1]).await));
+    }
+
+    // The firmware's error frame carries a numeric code, which must reach the
+    // caller as a DeviceError rather than as a raw control byte.
+    #[tokio::test]
+    async fn add_contact_reports_device_error_code() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+        let reader = MessageReader::new(dispatcher);
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+            // ERR_CODE_TABLE_FULL: the device's contact table is full
+            reader
+                .handle_rx(vec![PacketType::Error as u8, 3])
+                .await
+                .unwrap();
+        });
+
+        let result = timeout(Duration::from_secs(2), handler.add_contact(&contact()))
+            .await
+            .expect("add_contact should not wait for the default timeout");
+        match result {
+            Err(err @ Error::Device(DeviceError::TableFull)) => {
+                let msg = err.to_string();
+                assert!(
+                    !msg.chars().any(char::is_control),
+                    "control character in {msg:?}"
+                );
+                assert_eq!(msg, "Device error: table full (code 3)");
+            }
+            other => panic!("expected Err(Error::Device(TableFull)), got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -2338,12 +2372,15 @@ mod tests {
             // CMD_GET_STATS and replies with an error frame instead of a
             // Stats* event.
             dispatcher_clone
-                .emit(MeshCoreEvent::error("Unsupported command"))
+                .emit(MeshCoreEvent::error(DeviceError::UnsupportedCommand))
                 .await;
         });
 
         let result = handler.get_stats(StatsCategory::Core).await;
-        assert!(matches!(result, Err(Error::Device(_))));
+        assert!(matches!(
+            result,
+            Err(Error::Device(DeviceError::UnsupportedCommand))
+        ));
     }
 
     #[tokio::test]
@@ -2753,14 +2790,14 @@ mod tests {
             // CMD_GET_AUTOADD_CONFIG and replies with an error frame
             // (ERR_CODE_UNSUPPORTED_CMD) instead of AutoAddConfig.
             dispatcher_clone
-                .emit(MeshCoreEvent::error("Unsupported command"))
+                .emit(MeshCoreEvent::error(DeviceError::UnsupportedCommand))
                 .await;
         });
 
         let result = handler.get_autoadd_config().await;
         match result {
-            Err(Error::Device(msg)) => assert_eq!(msg, "Unsupported command"),
-            other => panic!("expected Err(Error::Device(\"Unsupported command\")), got {other:?}"),
+            Err(Error::Device(code)) => assert_eq!(code, DeviceError::UnsupportedCommand),
+            other => panic!("expected Err(Error::Device(UnsupportedCommand)), got {other:?}"),
         }
     }
 
@@ -2816,14 +2853,14 @@ mod tests {
             // CMD_SET_AUTOADD_CONFIG and replies with an error frame
             // (ERR_CODE_UNSUPPORTED_CMD) instead of Ok.
             dispatcher_clone
-                .emit(MeshCoreEvent::error("Unsupported command"))
+                .emit(MeshCoreEvent::error(DeviceError::UnsupportedCommand))
                 .await;
         });
 
         let result = handler.set_autoadd_config(0, None).await;
         match result {
-            Err(Error::Device(msg)) => assert_eq!(msg, "Unsupported command"),
-            other => panic!("expected Err(Error::Device(\"Unsupported command\")), got {other:?}"),
+            Err(Error::Device(code)) => assert_eq!(code, DeviceError::UnsupportedCommand),
+            other => panic!("expected Err(Error::Device(UnsupportedCommand)), got {other:?}"),
         }
     }
 
@@ -2845,8 +2882,8 @@ mod tests {
 
         let result = handler.set_autoadd_config(0, None).await;
         match result {
-            Err(Error::Device(msg)) => assert_eq!(msg, "Unknown error"),
-            other => panic!("expected Err(Error::Device(\"Unknown error\")), got {other:?}"),
+            Err(Error::Device(code)) => assert_eq!(code, DeviceError::Unspecified),
+            other => panic!("expected Err(Error::Device(Unspecified)), got {other:?}"),
         }
     }
 

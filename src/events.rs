@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::packets::{PayloadType, RouteType};
-use crate::{Error, PublicKey, CHANNEL_SECRET_LEN, PUBLIC_KEY_LEN};
+use crate::{DeviceError, Error, PublicKey, CHANNEL_SECRET_LEN, PUBLIC_KEY_LEN};
 
 /// Event types emitted by MeshCore
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -89,8 +89,10 @@ pub enum EventType {
 pub enum EventPayload {
     /// No payload
     None,
-    /// String payload (error messages, URIs, etc.)
+    /// String payload (URIs, disabled-feature messages, etc.)
     String(String),
+    /// Error code from a device error frame
+    DeviceError(DeviceError),
     /// Binary payload
     Bytes(Vec<u8>),
     /// Contact list
@@ -855,8 +857,8 @@ impl MeshCoreEvent {
     }
 
     /// Create an error event
-    pub fn error(msg: impl Into<String>) -> Self {
-        Self::new(EventType::Error, EventPayload::String(msg.into()))
+    pub fn error(code: DeviceError) -> Self {
+        Self::new(EventType::Error, EventPayload::DeviceError(code))
     }
 
     /// Check if this event matches the given filters
@@ -1063,11 +1065,11 @@ mod tests {
 
     #[test]
     fn test_event_error() {
-        let event = MeshCoreEvent::error("test error");
+        let event = MeshCoreEvent::error(DeviceError::NotFound);
         assert_eq!(event.event_type, EventType::Error);
         match event.payload {
-            EventPayload::String(s) => assert_eq!(s, "test error"),
-            _ => panic!("Expected String payload"),
+            EventPayload::DeviceError(code) => assert_eq!(code, DeviceError::NotFound),
+            _ => panic!("Expected DeviceError payload"),
         }
     }
 

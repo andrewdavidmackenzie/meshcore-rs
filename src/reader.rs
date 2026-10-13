@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use crate::events::*;
 use crate::packets::{BinaryReqType, ControlType, PacketType, PayloadType};
 use crate::parsing::*;
-use crate::{Error, Result};
+use crate::{DeviceError, Error, Result};
 
 /// Tracks a pending binary request
 #[derive(Debug, Clone)]
@@ -276,12 +276,11 @@ impl MessageReader {
             }
 
             PacketType::Error => {
-                let msg = if !payload.is_empty() {
-                    String::from_utf8_lossy(payload).to_string()
-                } else {
-                    "Unknown error".to_string()
+                let code = match payload.first() {
+                    Some(&code) => DeviceError::from(code),
+                    None => DeviceError::Unspecified,
                 };
-                self.dispatcher.emit(MeshCoreEvent::error(msg)).await;
+                self.dispatcher.emit(MeshCoreEvent::error(code)).await;
             }
 
             PacketType::ContactStart => {
@@ -694,14 +693,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_rx_error_with_message() {
+    async fn test_handle_rx_error_with_code() {
         let (reader, dispatcher) = create_reader();
         let mut receiver = dispatcher.receiver();
 
-        let mut data = vec![PacketType::Error as u8];
-        data.extend_from_slice(b"Test error");
-
-        reader.handle_rx(data).await.unwrap();
+        reader
+            .handle_rx(vec![PacketType::Error as u8, 3])
+            .await
+            .unwrap();
 
         let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
             .await
@@ -710,8 +709,8 @@ mod tests {
 
         assert_eq!(event.event_type, EventType::Error);
         match event.payload {
-            EventPayload::String(s) => assert_eq!(s, "Test error"),
-            _ => panic!("Expected String payload"),
+            EventPayload::DeviceError(code) => assert_eq!(code, DeviceError::TableFull),
+            _ => panic!("Expected DeviceError payload"),
         }
     }
 
@@ -732,8 +731,8 @@ mod tests {
 
         assert_eq!(event.event_type, EventType::Error);
         match event.payload {
-            EventPayload::String(s) => assert_eq!(s, "Unknown error"),
-            _ => panic!("Expected String payload"),
+            EventPayload::DeviceError(code) => assert_eq!(code, DeviceError::Unspecified),
+            _ => panic!("Expected DeviceError payload"),
         }
     }
 
