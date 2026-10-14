@@ -1253,8 +1253,9 @@ pub fn parse_discover_response(payload: &[u8]) -> Vec<DiscoverEntry> {
     let mut offset = 0;
     while offset + DISCOVER_ENTRY_MIN_LEN <= payload.len() {
         // jonesy:allow(overflow)
-        let pubkey = payload[offset..offset + DISCOVER_NAME_OFFSET].to_vec(); // jonesy:allow(overflow)
-        let name = read_string(payload, offset + DISCOVER_NAME_OFFSET, DISCOVER_NAME_LEN); // jonesy:allow(overflow)
+        let pubkey = payload[offset..offset + DISCOVER_NAME_OFFSET].to_vec();
+        let name_offset = offset + DISCOVER_NAME_OFFSET; // jonesy:allow(overflow)
+        let name = read_string(payload, name_offset, DISCOVER_NAME_LEN);
         entries.push(DiscoverEntry { pubkey, name });
         offset += DISCOVER_ENTRY_LEN; // jonesy:allow(overflow) -- bounded by payload.len()
     }
