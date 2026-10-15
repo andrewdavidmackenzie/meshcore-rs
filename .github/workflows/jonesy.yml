@@ -27,7 +27,7 @@ jobs:
 
       - name: Run jonesy analysis
         id: jonesy  # Required to reference outputs in subsequent steps
-        uses: andrewdavidmackenzie/jonesy@v1
+        uses: andrewdavidmackenzie/jonesy@v2
         with:
           fail-on-panic: true
 
