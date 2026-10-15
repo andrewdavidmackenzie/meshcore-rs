@@ -172,9 +172,9 @@ pub struct Contact {
     pub contact_type: u8,
     /// Contact flags
     pub flags: u8,
-    /// Path length (-1 = flood)
+    /// The path byte of `out_path` (`PathByte`); -1 (`OUT_PATH_UNKNOWN`) is no route, send by flood
     pub path_len: i8,
-    /// Output path (up to 64 bytes)
+    /// The route to the contact: the bytes `path_len` describes, none when unknown
     pub out_path: Vec<u8>,
     /// Advertised name
     pub adv_name: String,

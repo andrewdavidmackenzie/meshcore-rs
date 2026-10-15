@@ -12,7 +12,9 @@ use crate::events::{
     SelfInfo, StatsCategory, StatsData, StatusData, TraceHop, TraceInfo,
 };
 use crate::packets::{PayloadType, RouteType};
-use crate::{PublicKey, Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, PUBLIC_KEY_LEN};
+use crate::{
+    PublicKey, Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, MAX_PATH_LEN, PUBLIC_KEY_LEN,
+};
 
 /// Read a little-endian u16 from a byte slice
 pub fn read_u16_le(data: &[u8], offset: usize) -> Result<u16> {
@@ -116,6 +118,49 @@ pub fn read_bytes<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N]>
     Ok(arr)
 }
 
+// --- The path byte ---
+//
+// Every packet carries one after its header: hop count in bits 0-5, hash size
+// less one in bits 6-7, then `hops * hash_size` path bytes. A contact's
+// `out_path_len` and a message's `path_len` are this byte.
+
+/// The hash size `Packet::isValidPathLen` reserves; `OUT_PATH_UNKNOWN` decodes to it.
+const PATH_HASH_SIZE_RESERVED: u8 = 4;
+
+/// A packet's path byte: hop count in the low six bits, hash size less one in the top two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathByte(pub u8);
+
+impl PathByte {
+    /// `OUT_PATH_UNKNOWN` on a contact, "arrived direct" on a message.
+    pub const UNKNOWN: Self = Self(0xFF);
+
+    /// Hops on the path (`Packet::getPathHashCount`).
+    pub fn hops(self) -> u8 {
+        self.0 & 0x3F
+    }
+
+    /// Bytes per hop, 1 to 4 (`Packet::getPathHashSize`); 4 is reserved.
+    pub fn hash_size(self) -> u8 {
+        (self.0 >> 6).wrapping_add(1)
+    }
+
+    /// Bytes the path occupies (`Packet::getPathByteLen`), or `None` where the
+    /// firmware's `isValidPathLen` refuses: the reserved hash size, or over `MAX_PATH_LEN`.
+    pub fn route_len(self) -> Option<usize> {
+        if self.hash_size() == PATH_HASH_SIZE_RESERVED {
+            return None;
+        }
+        usize::from(self.hops())
+            .checked_mul(usize::from(self.hash_size()))
+            .filter(|len| *len <= MAX_PATH_LEN)
+    }
+}
+
+/// Where the path byte and the route sit in the firmware's contact frame
+/// (`writeContactRespFrame`): the route field is always `MAX_PATH_LEN` bytes.
+const CONTACT_PATH_LEN_OFFSET: usize = 34;
+const CONTACT_OUT_PATH_OFFSET: usize = CONTACT_PATH_LEN_OFFSET + 1;
 /// Where `lastmod` sits in the firmware's contact frame (`writeContactRespFrame`):
 /// the last field, so the frame is 147 payload bytes.
 const CONTACT_LASTMOD_OFFSET: usize = 143;
@@ -134,15 +179,17 @@ pub fn parse_contact(data: &[u8]) -> Result<Contact> {
     let public_key: PublicKey = read_bytes(data, 0)?;
     let contact_type = data[32];
     let flags = data[33];
-    let path_len = data[34] as i8;
+    let path_byte = PathByte(data[CONTACT_PATH_LEN_OFFSET]);
+    let path_len = path_byte.0 as i8;
 
-    // Path is 64 bytes at offset 35
-    let path_end = 35 + 64;
-    let out_path = data[35..path_end]
-        .iter()
-        .take_while(|&&b| b != 0)
-        .copied()
-        .collect();
+    // The route is the bytes the path byte describes; the rest of the field
+    // is whatever the firmware left there.
+    let out_path = path_byte
+        .route_len()
+        .and_then(|len| CONTACT_OUT_PATH_OFFSET.checked_add(len))
+        .and_then(|end| data.get(CONTACT_OUT_PATH_OFFSET..end))
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default();
 
     // The Name is 32 bytes at offset 99
     let adv_name = read_string(data, 99, 32);
@@ -1867,6 +1914,49 @@ mod tests {
         assert_eq!(contact.adv_lat, 37774900);
         assert_eq!(contact.adv_lon, -122419400);
         assert_eq!(contact.last_modification_timestamp, 2000);
+    }
+
+    #[test]
+    fn test_path_byte() {
+        let decode = |byte: u8| {
+            let path = PathByte(byte);
+            (path.hops(), path.hash_size(), path.route_len())
+        };
+        assert_eq!(decode(0x00), (0, 1, Some(0)));
+        assert_eq!(decode(0x02), (2, 1, Some(2)));
+        assert_eq!(decode(0x42), (2, 2, Some(4)));
+        assert_eq!(decode(0x82), (2, 3, Some(6)));
+        // 63 two-byte hops overrun the route field
+        assert_eq!(decode(0x7F), (63, 2, None));
+        // hash size 4 is reserved, and OUT_PATH_UNKNOWN decodes to it
+        assert_eq!(decode(0xC1), (1, 4, None));
+        assert_eq!(decode(PathByte::UNKNOWN.0), (63, 4, None));
+    }
+
+    #[test]
+    fn test_parse_contact_out_path_follows_the_path_byte() {
+        let mut data = vec![0u8; CONTACT_LEN_WITH_LASTMOD];
+        // two hops of two-byte hashes, one holding a zero, over a field an
+        // earlier, longer route left full
+        data[CONTACT_PATH_LEN_OFFSET] = 0x42;
+        data[CONTACT_OUT_PATH_OFFSET..CONTACT_OUT_PATH_OFFSET + MAX_PATH_LEN].fill(0xAA);
+        data[CONTACT_OUT_PATH_OFFSET..CONTACT_OUT_PATH_OFFSET + 4]
+            .copy_from_slice(&[0x00, 0x11, 0x22, 0x00]);
+
+        let contact = parse_contact(&data).unwrap();
+        assert_eq!(contact.path_len, 0x42);
+        assert_eq!(contact.out_path, vec![0x00, 0x11, 0x22, 0x00]);
+    }
+
+    #[test]
+    fn test_parse_contact_unknown_route_is_empty() {
+        let mut data = vec![0u8; CONTACT_LEN_WITH_LASTMOD];
+        data[CONTACT_PATH_LEN_OFFSET] = PathByte::UNKNOWN.0;
+        data[CONTACT_OUT_PATH_OFFSET..CONTACT_OUT_PATH_OFFSET + MAX_PATH_LEN].fill(0xAA);
+
+        let contact = parse_contact(&data).unwrap();
+        assert_eq!(contact.path_len, -1);
+        assert!(contact.out_path.is_empty());
     }
 
     #[test]

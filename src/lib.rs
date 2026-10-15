@@ -79,6 +79,8 @@ pub const CHANNEL_INFO_LEN: usize = 1 + CHANNEL_NAME_LEN + CHANNEL_SECRET_LEN;
 /// The most bytes a channel datagram's payload may carry (`MAX_CHANNEL_DATA_LENGTH` in the
 /// firmware: the 165-byte group datagram less the two-byte `data_type`)
 pub const MAX_CHANNEL_DATA_LEN: usize = 163;
+/// The most bytes a route may occupy (`MAX_PATH_SIZE` in the firmware)
+pub const MAX_PATH_LEN: usize = 64;
 
 // Auto-add-contacts config bits (`CommandHandler::get_autoadd_config`/
 // `set_autoadd_config`'s `config` byte). Matches firmware's
@@ -103,6 +105,7 @@ pub use events::{
 };
 pub use meshcore::MeshCore;
 pub use packets::{AnonReqType, BinaryReqType, ControlType, PacketType, PayloadType, RouteType};
+pub use parsing::PathByte;
 
 /// Result type alias using the library's Error type
 pub type Result<T> = std::result::Result<T, Error>;
