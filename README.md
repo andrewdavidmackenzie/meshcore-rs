@@ -57,7 +57,7 @@ async fn main() -> Result<(), meshcore_rs::Error> {
     // Send a message
     if let Some(contact) = contacts.first() {
         meshcore.commands().lock().await
-            .send_msg(contact, "Hello from Rust!", None)
+            .send_msg(contact, "Hello from Rust!", 0, None)
             .await?;
     }
 

@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .commands()
             .lock()
             .await
-            .send_msg(contact, "Hello from Rust!", None)
+            .send_msg(contact, "Hello from Rust!", 0, None)
             .await?;
         println!("Message sent! Expected ACK: {:02x?}", result.expected_ack);
     }
