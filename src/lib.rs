@@ -79,6 +79,8 @@ pub const CHANNEL_INFO_LEN: usize = 1 + CHANNEL_NAME_LEN + CHANNEL_SECRET_LEN;
 /// The most bytes a channel datagram's payload may carry (`MAX_CHANNEL_DATA_LENGTH` in the
 /// firmware: the 165-byte group datagram less the two-byte `data_type`)
 pub const MAX_CHANNEL_DATA_LEN: usize = 163;
+/// A contact path_byte sentinel indicating that this contact doesn't have a direct path
+pub const OUT_PATH_UNKNOWN: u8 = 0xFF;
 
 // Auto-add-contacts config bits (`CommandHandler::get_autoadd_config`/
 // `set_autoadd_config`'s `config` byte). Matches firmware's
