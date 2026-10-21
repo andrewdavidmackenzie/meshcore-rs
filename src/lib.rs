@@ -98,7 +98,7 @@ pub const AUTO_ADD_ROOM_SERVER: u8 = 1 << 3;
 /// Auto-add Sensor contacts (`ADV_TYPE_SENSOR`).
 pub const AUTO_ADD_SENSOR: u8 = 1 << 4;
 
-pub use error::Error;
+pub use error::{DeviceError, Error};
 pub use events::{
     ChannelData, ChannelMessage, ContactMessage, EventDispatcher, EventPayload, EventType,
     MeshCoreEvent, MsgSentInfo, Subscription,

@@ -9,7 +9,7 @@ use tokio::time::Instant;
 use crate::events::*;
 use crate::packets::{BinaryReqType, ControlType, PacketType, PayloadType};
 use crate::parsing::*;
-use crate::{Error, Result};
+use crate::{DeviceError, Error, Result};
 
 /// Tracks a pending binary request
 #[derive(Debug, Clone)]
@@ -208,7 +208,7 @@ impl MessageReader {
                     let pk_plen = req
                         .context
                         .get("pubkey_prefix_length")
-                        .and_then(|s| s.parse::<usize>().ok())
+                        .and_then(|s| s.parse::<usize>().ok()) // jonesy:allow(bounds) - inlined parse_neighbours indexing
                         .unwrap_or(4);
                     if let Ok(neighbours) = parse_neighbours(&data, pk_plen) {
                         MeshCoreEvent::new(
@@ -277,11 +277,11 @@ impl MessageReader {
             }
 
             PacketType::Error => {
-                let msg = match payload.first() {
-                    Some(code) => format!("code {}", code),
-                    None => "Unknown error".to_string(),
+                let code = match payload.first() {
+                    Some(&code) => DeviceError::from(code),
+                    None => DeviceError::Unspecified,
                 };
-                self.dispatcher.emit(MeshCoreEvent::error(msg)).await;
+                self.dispatcher.emit(MeshCoreEvent::error(code)).await;
             }
 
             PacketType::ContactStart => {
@@ -719,8 +719,8 @@ mod tests {
 
         assert_eq!(event.event_type, EventType::Error);
         match event.payload {
-            EventPayload::String(s) => assert_eq!(s, "code 3"),
-            _ => panic!("Expected String payload"),
+            EventPayload::DeviceError(code) => assert_eq!(code, DeviceError::TableFull),
+            _ => panic!("Expected DeviceError payload"),
         }
     }
 
@@ -741,8 +741,8 @@ mod tests {
 
         assert_eq!(event.event_type, EventType::Error);
         match event.payload {
-            EventPayload::String(s) => assert_eq!(s, "Unknown error"),
-            _ => panic!("Expected String payload"),
+            EventPayload::DeviceError(code) => assert_eq!(code, DeviceError::Unspecified),
+            _ => panic!("Expected DeviceError payload"),
         }
     }
 

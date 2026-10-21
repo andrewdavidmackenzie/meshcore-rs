@@ -28,7 +28,7 @@ pub enum Error {
 
     /// Device returned an error
     #[error("Device error: {0}")]
-    Device(String),
+    Device(#[from] DeviceError),
 
     /// Invalid parameter provided
     #[error("Invalid parameter: {0}")]
@@ -52,6 +52,58 @@ pub enum Error {
     Channel(String),
 }
 
+/// Error codes the companion firmware sends in an error frame
+/// (`ERR_CODE_*` in MeshCore's `examples/companion_radio/MyMesh.cpp`)
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeviceError {
+    /// Unknown or unsupported command (`ERR_CODE_UNSUPPORTED_CMD`)
+    #[error("unsupported command (code 1)")]
+    UnsupportedCommand,
+
+    /// Target not found, e.g. a contact or channel (`ERR_CODE_NOT_FOUND`)
+    #[error("not found (code 2)")]
+    NotFound,
+
+    /// Internal table or queue is full (`ERR_CODE_TABLE_FULL`)
+    #[error("table full (code 3)")]
+    TableFull,
+
+    /// Operation not valid in the device's current state (`ERR_CODE_BAD_STATE`)
+    #[error("bad state (code 4)")]
+    BadState,
+
+    /// Filesystem or storage failure (`ERR_CODE_FILE_IO_ERROR`)
+    #[error("file I/O error (code 5)")]
+    FileIo,
+
+    /// Invalid argument (`ERR_CODE_ILLEGAL_ARG`)
+    #[error("illegal argument (code 6)")]
+    IllegalArgument,
+
+    /// A code this library doesn't know
+    #[error("unknown (code {0})")]
+    Unknown(u8),
+
+    /// The error frame carried no code (companion firmware before 2025-03)
+    #[error("unspecified")]
+    Unspecified,
+}
+
+impl From<u8> for DeviceError {
+    fn from(code: u8) -> Self {
+        match code {
+            1 => DeviceError::UnsupportedCommand,
+            2 => DeviceError::NotFound,
+            3 => DeviceError::TableFull,
+            4 => DeviceError::BadState,
+            5 => DeviceError::FileIo,
+            6 => DeviceError::IllegalArgument,
+            code => DeviceError::Unknown(code),
+        }
+    }
+}
+
 impl Error {
     /// Create a connection error
     pub fn connection(msg: impl Into<String>) -> Self {
@@ -66,11 +118,6 @@ impl Error {
     /// Create a timeout error
     pub fn timeout(msg: impl Into<String>) -> Self {
         Error::Timeout(msg.into())
-    }
-
-    /// Create a device error
-    pub fn device(msg: impl Into<String>) -> Self {
-        Error::Device(msg.into())
     }
 
     /// Create an invalid parameter error
@@ -107,9 +154,36 @@ mod tests {
 
     #[test]
     fn test_device_error() {
-        let err = Error::device("busy");
-        assert_matches!(err, Error::Device(_));
-        assert_eq!(err.to_string(), "Device error: busy");
+        let err: Error = DeviceError::TableFull.into();
+        assert_matches!(err, Error::Device(DeviceError::TableFull));
+        assert_eq!(err.to_string(), "Device error: table full (code 3)");
+    }
+
+    #[test]
+    fn test_device_error_from_code() {
+        let cases = [
+            (
+                1,
+                DeviceError::UnsupportedCommand,
+                "unsupported command (code 1)",
+            ),
+            (2, DeviceError::NotFound, "not found (code 2)"),
+            (3, DeviceError::TableFull, "table full (code 3)"),
+            (4, DeviceError::BadState, "bad state (code 4)"),
+            (5, DeviceError::FileIo, "file I/O error (code 5)"),
+            (6, DeviceError::IllegalArgument, "illegal argument (code 6)"),
+            (42, DeviceError::Unknown(42), "unknown (code 42)"),
+        ];
+        for (code, expected, message) in cases {
+            let err = DeviceError::from(code);
+            assert_eq!(err, expected);
+            assert_eq!(err.to_string(), message);
+        }
+    }
+
+    #[test]
+    fn test_device_error_unspecified() {
+        assert_eq!(DeviceError::Unspecified.to_string(), "unspecified");
     }
 
     #[test]
