@@ -47,7 +47,12 @@ async fn main() -> Result<(), meshcore_rs::Error> {
     let meshcore = MeshCore::serial("/dev/ttyUSB0", 115200).await?;
 
     // Initialize connection and get device info
-    let info = meshcore.commands().lock().await.send_appstart().await?;
+    let info = meshcore
+        .commands()
+        .lock()
+        .await
+        .send_appstart_as("my-app")
+        .await?;
     println!("Connected to: {}", info.name);
 
     // Get contacts
@@ -78,7 +83,12 @@ async fn main() -> Result<(), meshcore_rs::Error> {
     let meshcore = MeshCore::serial("/dev/ttyUSB0", 115200).await?;
 
     // Initialize connection and get device info
-    let info = meshcore.commands().lock().await.send_appstart().await?;
+    let info = meshcore
+        .commands()
+        .lock()
+        .await
+        .send_appstart_as("my-app")
+        .await?;
     println!("Connected to: {}", info.name);
 
     // Subscribe to incoming messages
@@ -124,7 +134,12 @@ use std::collections::HashMap;
 #[tokio::main]
 async fn main() -> Result<(), meshcore_rs::Error> {
     let meshcore = MeshCore::serial("/dev/ttyUSB0", 115200).await?;
-    meshcore.commands().lock().await.send_appstart().await?;
+    meshcore
+        .commands()
+        .lock()
+        .await
+        .send_appstart_as("my-app")
+        .await?;
 
     let _sub = meshcore.subscribe(
         EventType::LogData,
@@ -164,7 +179,8 @@ traffic never triggers it; use `LogData` for general monitoring as above.
 
 ### Device Commands
 
-- `send_appstart()` - Initialize connection, get device info
+- `send_appstart_as()` - Initialize connection under your application's name, get device info
+- `send_appstart()` - The same, for an application with no name to give
 - `get_bat()` - Get battery voltage (millivolts) and storage info
 - `get_time()` / `set_time()` - Get/set device time
 - `set_name()` - Set device name

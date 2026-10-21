@@ -19,7 +19,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let meshcore = MeshCore::serial(&port, 115200).await?;
 
     // Send APPSTART to initialize connection and get device info
-    let self_info = meshcore.commands().lock().await.send_appstart().await?;
+    // An application names itself here, and the radio logs what it is told.
+    // `CARGO_BIN_NAME` is this example's own name, and would be yours.
+    let self_info = meshcore
+        .commands()
+        .lock()
+        .await
+        .send_appstart_as(env!("CARGO_BIN_NAME"))
+        .await?;
     println!("Connected to device: {}", self_info.name);
     println!("  Public key: {:02x?}", &self_info.public_key[..6]);
     println!("  TX power: {}", self_info.tx_power);

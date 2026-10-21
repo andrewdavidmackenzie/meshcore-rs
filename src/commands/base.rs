@@ -10,12 +10,16 @@ use crate::packets::BinaryReqType;
 use crate::parsing::{hex_decode, hex_encode, to_microdegrees};
 use crate::reader::MessageReader;
 use crate::{
-    Error, PublicKey, Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, MAX_CHANNEL_DATA_LEN,
-    MAX_PATH_LEN, PUBLIC_KEY_LEN,
+    Error, PublicKey, Result, CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, MAX_APP_NAME_LEN,
+    MAX_CHANNEL_DATA_LEN, MAX_PATH_LEN, PUBLIC_KEY_LEN,
 };
 
 /// Default command timeout
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How this library names itself to a radio when the caller names no
+/// application of its own
+pub const LIB_NAME: &str = "meshcore-rs";
 
 // Command byte constants (from MeshCore firmware)
 const CMD_APP_START: u8 = 1;
@@ -207,6 +211,21 @@ fn device_error<T>(payload: EventPayload) -> Result<T> {
     }
 }
 
+/// Build the APPSTART frame: the command byte, seven reserved bytes the
+/// firmware ignores, and then the name of whatever is connecting
+///
+/// A name too long for the frame is cut on a character boundary, so that what
+/// the radio reads is still a string.
+fn appstart_frame(name: &str) -> Vec<u8> {
+    let name = name.trim();
+    let fits = name.floor_char_boundary(MAX_APP_NAME_LEN);
+
+    let mut frame = vec![0u8; 8];
+    frame[0] = CMD_APP_START;
+    frame.extend_from_slice(&name.as_bytes()[..fits]);
+    frame
+}
+
 impl CommandHandler {
     /// Create a new command handler
     pub fn new(
@@ -349,29 +368,36 @@ impl CommandHandler {
 
     // ========== Device Commands ==========
 
-    /// Send APPSTART command to initialise connection
+    /// Send APPSTART command to initialise connection, named as [`LIB_NAME`]
     ///
-    /// Format: [CMD_APP_START=0x01][reserved: 7 bytes][app_name: "mccli"]
+    /// Format: [CMD_APP_START=0x01][reserved: 7 bytes][app_name]
+    ///
+    /// Use [`send_appstart_as`] to name the application being connected on
+    /// behalf of, which is the more useful thing for the radio to report.
+    ///
+    /// [`send_appstart_as`]: CommandHandler::send_appstart_as
     pub async fn send_appstart(&self) -> Result<SelfInfo> {
-        // Byte 0: CMD_APP_START (0x01)
-        // Bytes 1-7: reserved (zeros)
-        // Bytes 8+: app name
-        let data = [
-            CMD_APP_START,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00, // reserved
-            b'm',
-            b'c',
-            b'c',
-            b'l',
-            b'i', // app name TODO review this
-        ];
-        let event = self.send(&data, Some(EventType::SelfInfo)).await?;
+        self.appstart(appstart_frame(LIB_NAME)).await
+    }
+
+    /// Send APPSTART command to initialise connection, named after the
+    /// application making it
+    ///
+    /// The name travels as free text and the firmware only logs it ("App %s
+    /// connected"), which makes it the one place a node operator can tell what
+    /// is talking to their radio. It replaces [`LIB_NAME`] rather than being
+    /// added to it: a name given here is the whole of what the radio reports,
+    /// and an empty one leaves the radio with nothing to report.
+    ///
+    /// A name longer than [`MAX_APP_NAME_LEN`] is cut to fit, on a character
+    /// boundary.
+    pub async fn send_appstart_as(&self, app_name: &str) -> Result<SelfInfo> {
+        self.appstart(appstart_frame(app_name)).await
+    }
+
+    /// Send a prepared APPSTART frame and read the radio's answer
+    async fn appstart(&self, frame: Vec<u8>) -> Result<SelfInfo> {
+        let event = self.send(&frame, Some(EventType::SelfInfo)).await?;
 
         match event.payload {
             EventPayload::SelfInfo(info) => Ok(info),
@@ -1871,6 +1897,56 @@ mod tests {
         assert_eq!(result.unwrap().event_type, EventType::Error);
     }
 
+    #[test]
+    fn test_appstart_frame_layout() {
+        let frame = appstart_frame("  my-app  ");
+
+        assert_eq!(frame[0], CMD_APP_START);
+        assert_eq!(&frame[1..8], &[0; 7], "reserved bytes");
+        assert_eq!(&frame[8..], b"my-app", "the library adds nothing to it");
+    }
+
+    /// Nothing is added behind the caller's back, so an application that gives
+    /// no name is reported as having none.
+    #[test]
+    fn test_appstart_frame_can_carry_no_name_at_all() {
+        assert_eq!(appstart_frame("   ").len(), 8);
+    }
+
+    /// The firmware reads the name into a frame-sized buffer, so an app with a
+    /// lot to say about itself must not be allowed to overrun it.
+    #[test]
+    fn test_appstart_frame_is_cut_to_fit() {
+        // One byte and then two-byte characters, so that the limit falls in
+        // the middle of one and cutting there would leave the name no longer a
+        // string at all.
+        let frame = appstart_frame(&format!("a{}", "ñ".repeat(MAX_APP_NAME_LEN)));
+
+        let name = std::str::from_utf8(&frame[8..]).expect("whole characters");
+        assert_eq!(name.len(), MAX_APP_NAME_LEN - 1, "half a character dropped");
+    }
+
+    #[tokio::test]
+    async fn test_send_appstart_as_names_the_app() {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+
+        let dispatcher_clone = dispatcher.clone();
+        tokio::spawn(async move {
+            let sent = rx.recv().await.unwrap();
+            assert_eq!(sent[0], CMD_APP_START);
+            assert_eq!(&sent[8..], b"my-app");
+
+            dispatcher_clone
+                .emit(MeshCoreEvent::new(
+                    EventType::SelfInfo,
+                    EventPayload::SelfInfo(SelfInfo::default()),
+                ))
+                .await;
+        });
+
+        assert!(handler.send_appstart_as("my-app").await.is_ok());
+    }
+
     #[tokio::test]
     async fn test_send_appstart_success() {
         let (handler, mut rx, dispatcher) = create_test_handler();
@@ -1880,7 +1956,7 @@ mod tests {
             let sent = rx.recv().await.unwrap();
             // Verify the APPSTART command format
             assert_eq!(sent[0], CMD_APP_START);
-            assert_eq!(&sent[8..13], b"mccli");
+            assert_eq!(&sent[8..], LIB_NAME.as_bytes());
 
             // Send SelfInfo response
             let info = SelfInfo {
