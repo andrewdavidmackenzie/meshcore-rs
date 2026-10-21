@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::RwLock;
+use tokio::time::Instant;
 
 use crate::events::*;
 use crate::packets::{BinaryReqType, ControlType, PacketType, PayloadType};
@@ -1475,7 +1476,7 @@ mod tests {
         assert!(requests.contains_key("01020304"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_cleanup_expired() {
         let (reader, _dispatcher) = create_reader();
 
@@ -2718,7 +2719,7 @@ mod tests {
         assert_eq!(event.event_type, EventType::BinaryResponse);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_handle_rx_command_only_packet_types_ignored() {
         let (reader, dispatcher) = create_reader();
         let mut receiver = dispatcher.receiver();

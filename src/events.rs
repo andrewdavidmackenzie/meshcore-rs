@@ -1271,7 +1271,7 @@ mod tests {
         assert_eq!(result.unwrap().event_type, EventType::Ok);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_event_dispatcher_subscribe() {
         let dispatcher = Arc::new(EventDispatcher::new());
         let call_count = Arc::new(AtomicUsize::new(0));
@@ -1291,7 +1291,7 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_event_dispatcher_subscribe_with_filter() {
         let dispatcher = Arc::new(EventDispatcher::new());
         let call_count = Arc::new(AtomicUsize::new(0));
@@ -1327,7 +1327,7 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_event_dispatcher_unsubscribe() {
         let dispatcher = Arc::new(EventDispatcher::new());
         let call_count = Arc::new(AtomicUsize::new(0));
@@ -1359,7 +1359,7 @@ mod tests {
         assert!(call_count.load(Ordering::SeqCst) <= 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_event_dispatcher_wait_for_event() {
         let dispatcher = Arc::new(EventDispatcher::new());
         let dispatcher_clone = dispatcher.clone();
@@ -1382,7 +1382,7 @@ mod tests {
         assert_eq!(result.unwrap().event_type, EventType::Ok);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_event_dispatcher_wait_for_event_timeout() {
         let dispatcher = EventDispatcher::new();
 
@@ -1397,7 +1397,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_event_dispatcher_wait_for_event_with_filter() {
         let dispatcher = Arc::new(EventDispatcher::new());
         let dispatcher_clone = dispatcher.clone();

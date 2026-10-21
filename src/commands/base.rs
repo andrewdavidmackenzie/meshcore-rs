@@ -1735,7 +1735,7 @@ mod tests {
         assert_eq!(handler.default_timeout, Duration::from_secs(10));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_command_handler_send_timeout() {
         let (handler, mut rx, _dispatcher) = create_test_handler();
 
@@ -1775,7 +1775,7 @@ mod tests {
         assert_eq!(result.unwrap().event_type, EventType::Ok);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_command_handler_wait_for_event_timeout() {
         let (handler, _rx, _dispatcher) = create_test_handler();
 
@@ -1790,7 +1790,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_command_handler_wait_for_event_success() {
         let (handler, _rx, dispatcher) = create_test_handler();
 
@@ -1811,7 +1811,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_command_handler_wait_for_any_event() {
         let (handler, _rx, dispatcher) = create_test_handler();
 
@@ -1832,7 +1832,7 @@ mod tests {
         assert_eq!(result.unwrap().event_type, EventType::Error);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_command_handler_wait_for_any_event_timeout() {
         let (handler, _rx, _dispatcher) = create_test_handler();
 
@@ -3130,7 +3130,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_request_neighbours_wire_format() {
         let (handler, mut rx, dispatcher) = create_test_handler();
 
@@ -3210,7 +3210,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_send_path_discovery_wire_format() {
         let (handler, mut rx, _dispatcher) = create_test_handler();
 
@@ -3229,7 +3229,7 @@ mod tests {
         assert_eq!(sent.len(), 34); // total: 1 + 1 + 32
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_send_path_discovery_success() {
         let (handler, mut rx, dispatcher) = create_test_handler();
 
