@@ -1073,6 +1073,7 @@ impl Default for EventDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{PAUSE, TIMEOUT};
     use std::assert_matches;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -1286,7 +1287,7 @@ mod tests {
         dispatcher.emit(MeshCoreEvent::ok()).await;
 
         // Give time for callback to execute
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(PAUSE).await;
 
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
@@ -1322,7 +1323,7 @@ mod tests {
             )
             .await;
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(PAUSE).await;
 
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
@@ -1341,7 +1342,7 @@ mod tests {
 
         // First emit should trigger
         dispatcher.emit(MeshCoreEvent::ok()).await;
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(PAUSE).await;
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
 
         // Unsubscribe
@@ -1349,11 +1350,11 @@ mod tests {
 
         // This call to emit() should process unsubscription
         dispatcher.emit(MeshCoreEvent::ok()).await;
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(PAUSE).await;
 
         // Third emit should NOT trigger (unsubscribed)
         dispatcher.emit(MeshCoreEvent::ok()).await;
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(PAUSE).await;
 
         // Should still be 2 (second emit counted, third did not)
         assert!(call_count.load(Ordering::SeqCst) <= 2);
@@ -1366,16 +1367,12 @@ mod tests {
 
         // Spawn a task that emits after a short delay
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(PAUSE).await;
             dispatcher_clone.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = dispatcher
-            .wait_for_event(
-                Some(EventType::Ok),
-                HashMap::new(),
-                Duration::from_millis(100),
-            )
+            .wait_for_event(Some(EventType::Ok), HashMap::new(), TIMEOUT)
             .await;
 
         assert!(result.is_some());
@@ -1404,7 +1401,7 @@ mod tests {
 
         // Spawn a task that emits events
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(PAUSE).await;
             // First, emit with the wrong filter
             dispatcher_clone
                 .emit(
@@ -1412,7 +1409,7 @@ mod tests {
                         .with_attribute("tag", "wrong"),
                 )
                 .await;
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(PAUSE).await;
             // Then emit with the correct filter
             dispatcher_clone
                 .emit(
@@ -1426,7 +1423,7 @@ mod tests {
         filters.insert("tag".to_string(), "correct".to_string());
 
         let result = dispatcher
-            .wait_for_event(Some(EventType::Ack), filters, Duration::from_millis(100))
+            .wait_for_event(Some(EventType::Ack), filters, TIMEOUT)
             .await;
 
         assert!(result.is_some());
