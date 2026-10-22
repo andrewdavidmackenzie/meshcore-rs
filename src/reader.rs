@@ -624,6 +624,7 @@ impl MessageReader {
 mod tests {
     use super::*;
     use crate::packets::RouteType;
+    use crate::testing::PAUSE;
     use crate::{CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, PUBLIC_KEY_LEN};
     use std::time::Duration;
 
@@ -1493,7 +1494,7 @@ mod tests {
             .await;
 
         // Wait for expiration
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(PAUSE).await;
 
         // Trigger cleanup
         reader.cleanup_expired().await;

@@ -453,6 +453,7 @@ pub async fn read_task<R>(
 mod tests {
     use super::*;
     use crate::events::Contact;
+    use crate::testing::{PAUSE, TIMEOUT};
     use crate::{PublicKey, PUBLIC_KEY_LEN};
     use futures::StreamExt;
     use std::io::Cursor;
@@ -724,15 +725,13 @@ mod tests {
         *mc.connected.write().await = true;
 
         // Subscribe to Disconnected event before disconnecting
-        let event = mc.dispatcher.wait_for_event(
-            Some(EventType::Disconnected),
-            HashMap::new(),
-            Duration::from_secs(1),
-        );
+        let event =
+            mc.dispatcher
+                .wait_for_event(Some(EventType::Disconnected), HashMap::new(), TIMEOUT);
 
         // Run the real disconnect concurrently with the waiter
         let (result, disconnect_result) = tokio::join!(event, async {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(PAUSE).await;
             mc.disconnect().await
         });
         disconnect_result.unwrap();
@@ -788,7 +787,7 @@ mod tests {
             .await;
 
         // Give the spawned task a moment to run
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(PAUSE).await;
         assert!(*received.read().await);
     }
 
@@ -798,18 +797,14 @@ mod tests {
         let dispatcher = mc.dispatcher().clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(PAUSE).await;
             dispatcher
                 .emit(MeshCoreEvent::new(EventType::Battery, EventPayload::None))
                 .await;
         });
 
         let result = mc
-            .wait_for_event(
-                Some(EventType::Battery),
-                HashMap::new(),
-                Duration::from_secs(1),
-            )
+            .wait_for_event(Some(EventType::Battery), HashMap::new(), TIMEOUT)
             .await;
         assert!(result.is_some());
         assert_eq!(result.unwrap().event_type, EventType::Battery);
@@ -837,13 +832,13 @@ mod tests {
         let dispatcher = mc.dispatcher().clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(PAUSE).await;
             dispatcher
                 .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
                 .await;
         });
 
-        let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+        let event = tokio::time::timeout(TIMEOUT, stream.next())
             .await
             .expect("timed out")
             .expect("stream ended");
@@ -857,7 +852,7 @@ mod tests {
         let dispatcher = mc.dispatcher().clone();
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(PAUSE).await;
             // Emit a non-matching event first
             dispatcher
                 .emit(MeshCoreEvent::new(EventType::Ok, EventPayload::None))
@@ -869,7 +864,7 @@ mod tests {
         });
 
         // The filtered stream should skip the Ok event and give us Battery
-        let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+        let event = tokio::time::timeout(TIMEOUT, stream.next())
             .await
             .expect("timed out")
             .expect("stream ended");
@@ -919,7 +914,7 @@ mod tests {
             .await;
 
         // Give the spawned handler task time to run
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(PAUSE).await;
 
         let contacts = mc.contacts().await;
         assert_eq!(contacts.len(), 1);
@@ -942,7 +937,7 @@ mod tests {
             ))
             .await;
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(PAUSE).await;
 
         let self_info = mc.self_info().await;
         assert!(self_info.is_some());
@@ -961,7 +956,7 @@ mod tests {
             ))
             .await;
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(PAUSE).await;
 
         let time = mc.device_time().await;
         assert_eq!(time, Some(1234567890));
@@ -972,7 +967,7 @@ mod tests {
         caches_contact(EventType::NewContact).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn setup_event_handlers_next_contact() {
         caches_contact(EventType::NextContact).await;
     }
@@ -986,7 +981,7 @@ mod tests {
             .emit(MeshCoreEvent::new(kind, EventPayload::Contact(contact)))
             .await;
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(PAUSE).await;
 
         let contacts = mc.contacts().await;
         assert_eq!(contacts.len(), 1);
@@ -994,7 +989,7 @@ mod tests {
         assert!(contacts.contains_key(&key_hex));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn setup_event_handlers_contact_bad_payload() {
         let mc = create_test_meshcore();
         mc.setup_event_handlers().await;
@@ -1005,7 +1000,7 @@ mod tests {
                 .await;
         }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(PAUSE).await;
 
         assert!(mc.contacts().await.is_empty());
     }

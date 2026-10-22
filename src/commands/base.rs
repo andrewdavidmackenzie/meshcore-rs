@@ -1503,6 +1503,7 @@ mod tests {
     use std::assert_matches;
     use tokio::time::timeout;
 
+    use crate::testing::{PAUSE, TIMEOUT};
     use crate::{
         PacketType, AUTO_ADD_CHAT, AUTO_ADD_OVERWRITE_OLDEST, AUTO_ADD_REPEATER,
         AUTO_ADD_ROOM_SERVER,
@@ -1796,16 +1797,12 @@ mod tests {
 
         // Emit an event
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(PAUSE).await;
             dispatcher.emit(MeshCoreEvent::ok()).await;
         });
 
         let result = handler
-            .wait_for_event(
-                Some(EventType::Ok),
-                HashMap::new(),
-                Duration::from_millis(100),
-            )
+            .wait_for_event(Some(EventType::Ok), HashMap::new(), TIMEOUT)
             .await;
 
         assert!(result.is_ok());
@@ -1817,15 +1814,12 @@ mod tests {
 
         // Emit an error event
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(PAUSE).await;
             dispatcher.emit(MeshCoreEvent::error("test")).await;
         });
 
         let result = handler
-            .wait_for_any_event(
-                &[EventType::Ok, EventType::Error],
-                Duration::from_millis(100),
-            )
+            .wait_for_any_event(&[EventType::Ok, EventType::Error], TIMEOUT)
             .await;
 
         assert!(result.is_ok());
@@ -3254,7 +3248,7 @@ mod tests {
                 .await;
 
             // Small delay then emit PathDiscoveryResponse
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(PAUSE).await;
             dispatcher_clone
                 .emit(
                     MeshCoreEvent::new(
@@ -3276,7 +3270,7 @@ mod tests {
 
         let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
         let result = handler
-            .send_path_discovery_with_timeout(dest, Duration::from_millis(500))
+            .send_path_discovery_with_timeout(dest, TIMEOUT)
             .await;
         assert!(result.is_ok());
         let resp = result.unwrap();

@@ -111,6 +111,16 @@ pub use parsing::PathByte;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
+mod testing {
+    use std::time::Duration;
+
+    // These values are large, but waiting doesn't take real time with
+    // start_paused = true.
+    pub const PAUSE: Duration = Duration::from_secs(1);
+    pub const TIMEOUT: Duration = PAUSE.saturating_mul(5);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
