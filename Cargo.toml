@@ -2,6 +2,8 @@
 name = "meshcore-rs"
 version = "0.2.0"
 edition = "2021"
+# `str::floor_char_boundary`, used to cut an app name to what a frame holds
+rust-version = "1.91"
 description = "Rust library for communicating with MeshCore companion radio nodes"
 license = "MIT"
 repository = "https://github.com/andrewdavidmackenzie/meshcore-rs"

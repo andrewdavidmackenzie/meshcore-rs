@@ -180,7 +180,7 @@ traffic never triggers it; use `LogData` for general monitoring as above.
 ### Device Commands
 
 - `send_appstart_as()` - Initialize connection under your application's name, get device info
-- `send_appstart()` - The same, for an application with no name to give
+- `send_appstart()` - The same, under the library's own name (`LIB_NAME`)
 - `get_bat()` - Get battery voltage (millivolts) and storage info
 - `get_time()` / `set_time()` - Get/set device time
 - `set_name()` - Set device name
