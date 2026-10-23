@@ -14,7 +14,12 @@
 //!     let meshcore = MeshCore::serial("/dev/ttyUSB0", 115200).await?;
 //!
 //!     // Get device info
-//!     let info = meshcore.commands().lock().await.send_appstart().await?;
+//!     let info = meshcore
+//!         .commands()
+//!         .lock()
+//!         .await
+//!         .send_appstart_as("my-app")
+//!         .await?;
 //!     println!("Connected to: {}", info.name);
 //!
 //!     // Get contacts
@@ -44,7 +49,12 @@
 //!     let meshcore = MeshCore::ble_connect("MyDevice").await?;
 //!
 //!     // Get device info
-//!     let info = meshcore.commands().lock().await.send_appstart().await?;
+//!     let info = meshcore
+//!         .commands()
+//!         .lock()
+//!         .await
+//!         .send_appstart_as("my-app")
+//!         .await?;
 //!     println!("Connected to: {}", info.name);
 //!
 //!     // Get contacts
@@ -81,6 +91,11 @@ pub const CHANNEL_INFO_LEN: usize = 1 + CHANNEL_NAME_LEN + CHANNEL_SECRET_LEN;
 pub const MAX_CHANNEL_DATA_LEN: usize = 163;
 /// The most bytes a route may occupy (`MAX_PATH_SIZE` in the firmware)
 pub const MAX_PATH_LEN: usize = 64;
+/// The most bytes an application name may occupy in `CMD_APP_START`
+/// (`MAX_FRAME_SIZE` in the firmware, less the eight-byte header the name
+/// follows). The firmware null-terminates what it reads into a buffer one byte
+/// longer than a frame, so a name filling the frame exactly is still safe.
+pub const MAX_APP_NAME_LEN: usize = 168;
 
 // Auto-add-contacts config bits (`CommandHandler::get_autoadd_config`/
 // `set_autoadd_config`'s `config` byte). Matches firmware's
