@@ -17,10 +17,6 @@ use crate::{
 /// Default command timeout
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How this library names itself to a radio when the caller names no
-/// application of its own
-pub const LIB_NAME: &str = "meshcore-rs";
-
 // Command byte constants (from MeshCore firmware)
 const CMD_APP_START: u8 = 1;
 const CMD_SEND_TXT_MSG: u8 = 2;
@@ -368,7 +364,7 @@ impl CommandHandler {
 
     // ========== Device Commands ==========
 
-    /// Send APPSTART command to initialise connection, named as [`LIB_NAME`]
+    /// Send APPSTART command to initialise connection, named as the crate
     ///
     /// Format: [CMD_APP_START=0x01][reserved: 7 bytes][app_name]
     ///
@@ -377,7 +373,7 @@ impl CommandHandler {
     ///
     /// [`send_appstart_as`]: CommandHandler::send_appstart_as
     pub async fn send_appstart(&self) -> Result<SelfInfo> {
-        self.appstart(appstart_frame(LIB_NAME)).await
+        self.appstart(appstart_frame(env!("CARGO_PKG_NAME"))).await
     }
 
     /// Send APPSTART command to initialise connection, named after the
@@ -385,7 +381,7 @@ impl CommandHandler {
     ///
     /// The name travels as free text and the firmware only logs it ("App %s
     /// connected"), which makes it the one place a node operator can tell what
-    /// is talking to their radio. It replaces [`LIB_NAME`] rather than being
+    /// is talking to their radio. It replaces the crate name rather than being
     /// added to it: a name given here is the whole of what the radio reports,
     /// and an empty one leaves the radio with nothing to report.
     ///
@@ -1956,7 +1952,7 @@ mod tests {
             let sent = rx.recv().await.unwrap();
             // Verify the APPSTART command format
             assert_eq!(sent[0], CMD_APP_START);
-            assert_eq!(&sent[8..], LIB_NAME.as_bytes());
+            assert_eq!(&sent[8..], env!("CARGO_PKG_NAME").as_bytes());
 
             // Send SelfInfo response
             let info = SelfInfo {
