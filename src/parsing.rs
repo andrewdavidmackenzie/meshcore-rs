@@ -122,7 +122,7 @@ pub fn read_bytes<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N]>
 //
 // Every packet carries one after its header: hop count in bits 0-5, hash size
 // less one in bits 6-7, then `hops * hash_size` path bytes. A contact's
-// `out_path_len` and a message's `path_len` are this byte.
+// `out_path_len` and a message's `path_byte` are this byte.
 
 /// The hash size `Packet::isValidPathLen` reserves; `OUT_PATH_UNKNOWN` decodes to it.
 const PATH_HASH_SIZE_RESERVED: u8 = 4;
@@ -437,6 +437,12 @@ pub fn parse_status(data: &[u8], sender_prefix: [u8; 6]) -> Result<StatusData> {
     })
 }
 
+/// Where the path byte sits in each message frame.
+const CONTACT_MSG_PATH_OFFSET: usize = 6;
+const CONTACT_MSG_V3_PATH_OFFSET: usize = 9;
+const CHANNEL_MSG_PATH_OFFSET: usize = 1;
+const CHANNEL_MSG_V3_PATH_OFFSET: usize = 4;
+
 /// Parse a contact message (v2 format)
 pub fn parse_contact_msg(data: &[u8]) -> Result<ContactMessage> {
     if data.len() < 12 {
@@ -444,7 +450,10 @@ pub fn parse_contact_msg(data: &[u8]) -> Result<ContactMessage> {
     }
 
     let sender_prefix: [u8; 6] = read_bytes(data, 0)?;
-    let path_len = data[6];
+    let path_byte = data
+        .get(CONTACT_MSG_PATH_OFFSET)
+        .map(|byte| PathByte(*byte))
+        .ok_or_else(|| Error::protocol("Contact message too short"))?;
     let txt_type = data[7];
     let sender_timestamp = read_u32_le(data, 8)?;
 
@@ -463,7 +472,7 @@ pub fn parse_contact_msg(data: &[u8]) -> Result<ContactMessage> {
 
     Ok(ContactMessage {
         sender_prefix,
-        path_len,
+        path_byte,
         txt_type,
         sender_timestamp,
         text,
@@ -483,7 +492,10 @@ pub fn parse_contact_msg_v3(data: &[u8]) -> Result<ContactMessage> {
     // bytes 1-2 are reserved
 
     let sender_prefix: [u8; 6] = read_bytes(data, 3)?;
-    let path_len = data[9];
+    let path_byte = data
+        .get(CONTACT_MSG_V3_PATH_OFFSET)
+        .map(|byte| PathByte(*byte))
+        .ok_or_else(|| Error::protocol("Contact message v3 too short"))?;
     let txt_type = data[10];
     let sender_timestamp = read_u32_le(data, 11)?;
 
@@ -502,7 +514,7 @@ pub fn parse_contact_msg_v3(data: &[u8]) -> Result<ContactMessage> {
 
     Ok(ContactMessage {
         sender_prefix,
-        path_len,
+        path_byte,
         txt_type,
         sender_timestamp,
         text,
@@ -518,7 +530,10 @@ pub fn parse_channel_msg(data: &[u8]) -> Result<ChannelMessage> {
     }
 
     let channel_idx = data[0];
-    let path_len = data[1];
+    let path_byte = data
+        .get(CHANNEL_MSG_PATH_OFFSET)
+        .map(|byte| PathByte(*byte))
+        .ok_or_else(|| Error::protocol("Channel message too short"))?;
     let txt_type = data[2];
     let sender_timestamp = read_u32_le(data, 3)?;
 
@@ -530,7 +545,7 @@ pub fn parse_channel_msg(data: &[u8]) -> Result<ChannelMessage> {
 
     Ok(ChannelMessage {
         channel_idx,
-        path_len,
+        path_byte,
         txt_type,
         sender_timestamp,
         text,
@@ -564,7 +579,7 @@ pub fn parse_channel_data(data: &[u8]) -> Result<ChannelData> {
 
     let snr = byte(CHANNEL_DATA_SNR_OFFSET)? as i8 as f32 / 4.0;
     let channel_idx = byte(CHANNEL_DATA_CHANNEL_IDX_OFFSET)?;
-    let path_len = byte(CHANNEL_DATA_PATH_LEN_OFFSET)?;
+    let path_byte = PathByte(byte(CHANNEL_DATA_PATH_LEN_OFFSET)?);
     let data_type = read_u16_le(data, CHANNEL_DATA_TYPE_OFFSET)?;
     let data_len = usize::from(byte(CHANNEL_DATA_LEN_OFFSET)?);
     let end = CHANNEL_DATA_PAYLOAD_OFFSET
@@ -576,7 +591,7 @@ pub fn parse_channel_data(data: &[u8]) -> Result<ChannelData> {
 
     Ok(ChannelData {
         channel_idx,
-        path_len,
+        path_byte,
         data_type,
         data: payload.to_vec(),
         snr,
@@ -594,7 +609,10 @@ pub fn parse_channel_msg_v3(data: &[u8]) -> Result<ChannelMessage> {
     // bytes 1-2 are reserved
 
     let channel_idx = data[3];
-    let path_len = data[4];
+    let path_byte = data
+        .get(CHANNEL_MSG_V3_PATH_OFFSET)
+        .map(|byte| PathByte(*byte))
+        .ok_or_else(|| Error::protocol("Channel message v3 too short"))?;
     let txt_type = data[5];
     let sender_timestamp = read_u32_le(data, 6)?;
 
@@ -606,7 +624,7 @@ pub fn parse_channel_msg_v3(data: &[u8]) -> Result<ChannelMessage> {
 
     Ok(ChannelMessage {
         channel_idx,
-        path_len,
+        path_byte,
         txt_type,
         sender_timestamp,
         text,
@@ -2079,7 +2097,7 @@ mod tests {
         let mut data = vec![0u8; 20];
         // sender_prefix at 0
         data[0..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
-        data[6] = 2; // path_len
+        data[6] = 0x45; // path byte: 5 hops over 2-byte hashes
         data[7] = 1; // txt_type
                      // sender_timestamp at 8
         data[8..12].copy_from_slice(&1234567890u32.to_le_bytes());
@@ -2088,7 +2106,9 @@ mod tests {
 
         let msg = parse_contact_msg(&data).unwrap();
         assert_eq!(msg.sender_prefix, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
-        assert_eq!(msg.path_len, 2);
+        assert_eq!(msg.path_byte, PathByte(0x45));
+        assert_eq!(msg.path_byte.hops(), 5);
+        assert_eq!(msg.path_byte.hash_size(), 2);
         assert_eq!(msg.txt_type, 1);
         assert_eq!(msg.sender_timestamp, 1234567890);
         assert_eq!(msg.text, "Hi there");
@@ -2126,7 +2146,7 @@ mod tests {
                       // reserved bytes at 1-2
                       // sender_prefix at 3
         data[3..9].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
-        data[9] = 3; // path_len
+        data[9] = 3; // path byte: 3 hops over 1-byte hashes
         data[10] = 1; // txt_type
                       // sender_timestamp at 11
         data[11..15].copy_from_slice(&1234567890u32.to_le_bytes());
@@ -2136,7 +2156,9 @@ mod tests {
         let msg = parse_contact_msg_v3(&data).unwrap();
         assert_eq!(msg.snr, Some(10.0));
         assert_eq!(msg.sender_prefix, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
-        assert_eq!(msg.path_len, 3);
+        assert_eq!(msg.path_byte, PathByte(3));
+        assert_eq!(msg.path_byte.hops(), 3);
+        assert_eq!(msg.path_byte.hash_size(), 1);
         assert_eq!(msg.text, "V3 msg!!");
     }
 
@@ -2150,14 +2172,16 @@ mod tests {
     fn test_parse_channel_msg() {
         let mut data = Vec::new();
         data.push(5); // channel_idx
-        data.push(1); // path_len
+        data.push(0x40); // path byte: 0 hops, 2-byte hashes
         data.push(0); // txt_type
         data.extend_from_slice(&1234567890u32.to_le_bytes());
         data.extend_from_slice(b"Channel");
 
         let msg = parse_channel_msg(&data).unwrap();
         assert_eq!(msg.channel_idx, 5);
-        assert_eq!(msg.path_len, 1);
+        assert_eq!(msg.path_byte, PathByte(0x40));
+        assert_eq!(msg.path_byte.hops(), 0);
+        assert_eq!(msg.path_byte.hash_size(), 2);
         assert_eq!(msg.text, "Channel");
     }
 
@@ -2173,7 +2197,7 @@ mod tests {
         data.push(40); // snr_raw = 40, SNR = 10.0
         data.extend_from_slice(&[0x00, 0x00]); // reserved bytes
         data.push(5); // channel_idx
-        data.push(2); // path_len
+        data.push(2); // path byte: 2 hops over 1-byte hashes
         data.push(0); // txt_type
         data.extend_from_slice(&1234567890u32.to_le_bytes());
         data.extend_from_slice(b"V3 chan");
@@ -2181,7 +2205,7 @@ mod tests {
         let msg = parse_channel_msg_v3(&data).unwrap();
         assert_eq!(msg.snr, Some(10.0));
         assert_eq!(msg.channel_idx, 5);
-        assert_eq!(msg.path_len, 2);
+        assert_eq!(msg.path_byte, PathByte(2));
         assert_eq!(msg.text, "V3 chan");
     }
 
@@ -2197,7 +2221,7 @@ mod tests {
         let datagram = parse_channel_data(&data).unwrap();
         assert_eq!(datagram.snr, 10.0);
         assert_eq!(datagram.channel_idx, 6);
-        assert_eq!(datagram.path_len, 0xFF);
+        assert_eq!(datagram.path_byte, PathByte::UNKNOWN);
         assert_eq!(datagram.data_type, 0xFF42);
         assert_eq!(datagram.data, vec![0xDE, 0xAD, 0xBE]);
     }
