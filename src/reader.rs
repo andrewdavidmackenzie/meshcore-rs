@@ -624,6 +624,7 @@ impl MessageReader {
 mod tests {
     use super::*;
     use crate::packets::RouteType;
+    use crate::parsing::PathByte;
     use crate::testing::PAUSE;
     use crate::{CHANNEL_NAME_LEN, CHANNEL_SECRET_LEN, PUBLIC_KEY_LEN};
     use std::time::Duration;
@@ -1748,7 +1749,7 @@ mod tests {
         match event.payload {
             EventPayload::ContactMessage(msg) => {
                 assert_eq!(msg.text, "Hello!");
-                assert_eq!(msg.path_len, 2);
+                assert_eq!(msg.path_byte, PathByte(2));
             }
             _ => panic!("Expected ContactMessage payload"),
         }
