@@ -157,28 +157,95 @@ impl PathByte {
     }
 }
 
+// --- Contact/new advert wire-format layout ---
+//
+// Written by the companion firmware's `writeContactRespFrame`.
+// Layout: [public_key: 32][contact_type: 1][flags: 1][path_byte: 1][out_path: 64]
+// [contact_name: 32][last_advert: u32][lat: i32][lon: i32][last_modified: u32]
+
 /// Where the path byte and the route sit in the firmware's contact frame
 /// (`writeContactRespFrame`): the route field is always `MAX_PATH_LEN` bytes.
-const CONTACT_PATH_LEN_OFFSET: usize = 34;
+const CONTACT_PUBLIC_KEY_OFFSET: usize = 0;
+const CONTACT_TYPE_OFFSET: usize = CONTACT_PUBLIC_KEY_OFFSET + PUBLIC_KEY_LEN;
+const CONTACT_FLAGS_OFFSET: usize = CONTACT_TYPE_OFFSET + 1;
+const CONTACT_PATH_LEN_OFFSET: usize = CONTACT_FLAGS_OFFSET + 1;
+#[cfg(test)]
+const CONTACT_PATH_BYTE_OFFSET: usize = CONTACT_PATH_LEN_OFFSET;
 const CONTACT_OUT_PATH_OFFSET: usize = CONTACT_PATH_LEN_OFFSET + 1;
+const CONTACT_NAME_OFFSET: usize = CONTACT_OUT_PATH_OFFSET + MAX_PATH_LEN;
+const CONTACT_NAME_LEN: usize = 32;
+const CONTACT_LAST_ADVERT_OFFSET: usize = CONTACT_NAME_OFFSET + CONTACT_NAME_LEN;
+const CONTACT_LAT_OFFSET: usize = CONTACT_LAST_ADVERT_OFFSET + 4;
+const CONTACT_LON_OFFSET: usize = CONTACT_LAT_OFFSET + 4;
 /// Where `lastmod` sits in the firmware's contact frame (`writeContactRespFrame`):
 /// the last field, so the frame is 147 payload bytes.
 const CONTACT_LASTMOD_OFFSET: usize = 143;
 const CONTACT_LEN_WITH_LASTMOD: usize = CONTACT_LASTMOD_OFFSET + 4;
+const CONTACT_LEN: usize = CONTACT_LEN_WITH_LASTMOD;
+/// A contact path_byte sentinel indicating that this contact doesn't have a direct path
+#[cfg(test)]
+const OUT_PATH_UNKNOWN: u8 = PathByte::UNKNOWN.0;
 
-/// Parse a contact from raw bytes. A frame from firmware older than `lastmod`
-/// is 145 bytes and reads `lastmod` as 0.
+// --- Path byte encoding (test helpers) ---
+
+#[cfg(test)]
+mod path_byte_encoding {
+    use super::*;
+
+    // Bit layout: [hash_size: bits 7:6][hop_count: bits 5:0]
+
+    /// The high 2 bits of path_byte indicate the path hash size
+    const PATH_BYTE_SIZE_MASK: u8 = 0b11_000000;
+    /// The low 6 bits of path_byte indicate the hop count.
+    const PATH_BYTE_LENGTH_MASK: u8 = 0b00_111111;
+
+    /// Decode and validate a path byte into `(hash_size, hops, bytes_len)`.
+    /// `bytes_len` is `hops * hash_size` and never exceeds `MAX_PATH_LEN`.
+    ///
+    /// Errors on the reserved 4-byte hash size and on more hops than fit in
+    /// `MAX_PATH_LEN`, as firmware's `Packet::isValidPathLen` does.
+    pub fn decode_path_byte(path_byte: u8) -> Result<(u8, u8, usize)> {
+        let encoded_path_hash = (path_byte & PATH_BYTE_SIZE_MASK) >> 6;
+        let path_hops = path_byte & PATH_BYTE_LENGTH_MASK;
+
+        let (path_hash_size, max_hops): (u8, u8) = match encoded_path_hash {
+            0 => (1, MAX_PATH_LEN as u8),
+            1 => (2, (MAX_PATH_LEN / 2) as u8),
+            2 => (3, (MAX_PATH_LEN / 3) as u8),
+            // path_hash_size=4 is reserved
+            _ => {
+                return Err(Error::protocol(format!(
+                    "Path uses reserved 4-byte hash size: path byte {:#04x}",
+                    path_byte
+                )))
+            }
+        };
+        if path_hops > max_hops {
+            // We explicitly calculated the max out_len based on the path hash
+            // size so that we can provide a more specific error message.
+            return Err(Error::protocol(format!(
+                "Path has {} hops of {}-byte hashes, max is {}: path byte {:#04x}",
+                path_hops, path_hash_size, max_hops, path_byte
+            )));
+        }
+        // At most 64 bytes after the hop check; saturating_mul keeps it panic-free.
+        let path_bytes_len = usize::from(path_hops).saturating_mul(usize::from(path_hash_size));
+        Ok((path_hash_size, path_hops, path_bytes_len))
+    }
+}
+
+/// Parse a contact from raw bytes.
 pub fn parse_contact(data: &[u8]) -> Result<Contact> {
-    if data.len() < 145 {
+    if data.len() < CONTACT_LEN {
         return Err(Error::protocol(format!(
             "Contact data too short: {} bytes",
             data.len()
         )));
     }
 
-    let public_key: PublicKey = read_bytes(data, 0)?;
-    let contact_type = data[32];
-    let flags = data[33];
+    let public_key: PublicKey = read_bytes(data, CONTACT_PUBLIC_KEY_OFFSET)?;
+    let contact_type = data[CONTACT_TYPE_OFFSET];
+    let flags = data[CONTACT_FLAGS_OFFSET];
     let path_byte = PathByte(data[CONTACT_PATH_LEN_OFFSET]);
     let path_len = path_byte.0 as i8;
 
@@ -191,19 +258,14 @@ pub fn parse_contact(data: &[u8]) -> Result<Contact> {
         .map(<[u8]>::to_vec)
         .unwrap_or_default();
 
-    // The Name is 32 bytes at offset 99
-    let adv_name = read_string(data, 99, 32);
+    let adv_name = read_string(data, CONTACT_NAME_OFFSET, CONTACT_NAME_LEN);
 
     // Timestamps and coordinates
-    let last_advert = read_u32_le(data, 131)?;
-    let adv_lat = read_i32_le(data, 135)?;
-    let adv_lon = read_i32_le(data, 139)?;
+    let last_advert = read_u32_le(data, CONTACT_LAST_ADVERT_OFFSET)?;
+    let adv_lat = read_i32_le(data, CONTACT_LAT_OFFSET)?;
+    let adv_lon = read_i32_le(data, CONTACT_LON_OFFSET)?;
 
-    let last_modification_timestamp = if data.len() >= CONTACT_LEN_WITH_LASTMOD {
-        read_u32_le(data, CONTACT_LASTMOD_OFFSET).unwrap_or(0)
-    } else {
-        0
-    };
+    let last_modification_timestamp = read_u32_le(data, CONTACT_LASTMOD_OFFSET)?;
 
     Ok(Contact {
         public_key,
@@ -1677,6 +1739,7 @@ pub fn parse_path_discovery_response(payload: &[u8]) -> Result<PathDiscoveryResp
 
 #[cfg(test)]
 mod tests {
+    use super::path_byte_encoding::decode_path_byte;
     use super::*;
     use std::assert_matches;
 
@@ -1882,28 +1945,20 @@ mod tests {
     #[test]
     fn test_parse_contact() {
         // The firmware's frame: lastmod is the last field.
-        let mut data = vec![0u8; CONTACT_LEN_WITH_LASTMOD];
-        // Public key (32 bytes)
-        data[0..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
-        // contact_type
-        data[32] = 1;
-        // flags
-        data[33] = 0x02;
-        // path_len
-        data[34] = 3;
-        // out_path (starts at 35, 64 bytes)
-        data[35..38].copy_from_slice(&[0x0A, 0x0B, 0x0C]);
-        // adv_name (starts at 99, 32 bytes)
-        data[99..104].copy_from_slice(b"Test\0");
-        // last_advert (at 131, 4 bytes)
-        data[131..135].copy_from_slice(&1000u32.to_le_bytes());
-        // adv_lat (at 135, 4 bytes)
-        data[135..139].copy_from_slice(&37774900i32.to_le_bytes());
-        // adv_lon (at 139, 4 bytes)
-        data[139..143].copy_from_slice(&(-122419400i32).to_le_bytes());
-        // last_modification_timestamp
-        data[CONTACT_LASTMOD_OFFSET..CONTACT_LEN_WITH_LASTMOD]
-            .copy_from_slice(&2000u32.to_le_bytes());
+        let mut data = vec![0u8; CONTACT_LEN];
+        data[CONTACT_PUBLIC_KEY_OFFSET..][..6]
+            .copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        data[CONTACT_TYPE_OFFSET] = 1;
+        data[CONTACT_FLAGS_OFFSET] = 0x02;
+        data[CONTACT_PATH_BYTE_OFFSET] = 3;
+        data[CONTACT_OUT_PATH_OFFSET..][..3].copy_from_slice(&[0x0A, 0x0B, 0x0C]);
+        data[CONTACT_NAME_OFFSET..][..5].copy_from_slice(b"Test\0");
+        data[CONTACT_LAST_ADVERT_OFFSET..CONTACT_LAT_OFFSET]
+            .copy_from_slice(&1000u32.to_le_bytes());
+        data[CONTACT_LAT_OFFSET..CONTACT_LON_OFFSET].copy_from_slice(&37774900i32.to_le_bytes());
+        data[CONTACT_LON_OFFSET..CONTACT_LASTMOD_OFFSET]
+            .copy_from_slice(&(-122419400i32).to_le_bytes());
+        data[CONTACT_LASTMOD_OFFSET..CONTACT_LEN].copy_from_slice(&2000u32.to_le_bytes());
 
         let contact = parse_contact(&data).unwrap();
         assert_eq!(contact.contact_type, 1);
@@ -1961,18 +2016,120 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_contact_without_lastmod_reads_zero() {
-        let mut data = vec![0u8; 145];
-        data[32] = 1;
-        data[131..135].copy_from_slice(&1000u32.to_le_bytes());
+    fn test_parse_contact_path_with_zero_hop_hash() {
+        let mut data = vec![0u8; CONTACT_LEN];
+        // path_len: 2 hops of 1-byte hashes
+        data[CONTACT_PATH_BYTE_OFFSET] = 2;
+        // MeshCore reserves 0x00 and 0xFF as the first public key byte, so a
+        // 1-byte hop hash of 0x00 should not occur; this is a safety check
+        // that the path is read by length, not up to a zero byte.
+        data[CONTACT_OUT_PATH_OFFSET..][..2].copy_from_slice(&[0x00, 0x5A]);
 
         let contact = parse_contact(&data).unwrap();
-        assert_eq!(contact.last_modification_timestamp, 0);
+        assert_eq!(contact.out_path, vec![0x00, 0x5A]);
+    }
+
+    #[test]
+    fn test_parse_contact_path_with_two_byte_hashes() {
+        let mut data = vec![0u8; CONTACT_LEN];
+        // path_len: 2 hops of 2-byte hashes (bits 6-7 = 0b01 -> +1 = 2)
+        data[CONTACT_PATH_BYTE_OFFSET] = 0b01_000010;
+        data[CONTACT_OUT_PATH_OFFSET..][..4].copy_from_slice(&[0x12, 0x00, 0x00, 0x34]);
+
+        let contact = parse_contact(&data).unwrap();
+        assert_eq!(contact.out_path, vec![0x12, 0x00, 0x00, 0x34]);
+    }
+
+    #[test]
+    fn test_parse_contact_path_with_three_byte_hashes() {
+        let mut data = vec![0u8; CONTACT_LEN];
+        // path_len: 2 hops of 3-byte hashes (bits 6-7 = 0b10 -> +1 = 3)
+        data[CONTACT_PATH_BYTE_OFFSET] = 0b10_000010;
+        data[CONTACT_OUT_PATH_OFFSET..][..6].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+        // Bytes past the path are not part of it
+        data[CONTACT_OUT_PATH_OFFSET + 6] = 0x07;
+
+        let contact = parse_contact(&data).unwrap();
+        assert_eq!(contact.out_path, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+    }
+
+    #[test]
+    fn test_parse_contact_path_with_max_one_byte_hops() {
+        let mut data = vec![0u8; CONTACT_LEN];
+        // path_len: 63 hops of 1-byte hashes, the most the hop bits can hold
+        data[CONTACT_PATH_BYTE_OFFSET] = 0b00_111111;
+        data[CONTACT_OUT_PATH_OFFSET..][..63].fill(0x11);
+        // Bytes past the path are not part of it
+        data[CONTACT_OUT_PATH_OFFSET + 63] = 0x22;
+
+        let contact = parse_contact(&data).unwrap();
+        assert_eq!(contact.out_path, vec![0x11; 63]);
+    }
+
+    #[test]
+    fn test_parse_contact_path_filling_path_field() {
+        let mut data = vec![0u8; CONTACT_LEN];
+        // path_len: 32 hops of 2-byte hashes = 64 bytes, the whole path field
+        data[CONTACT_PATH_BYTE_OFFSET] = 0b01_100000;
+        data[CONTACT_OUT_PATH_OFFSET..CONTACT_NAME_OFFSET].fill(0x33);
+
+        let contact = parse_contact(&data).unwrap();
+        assert_eq!(contact.out_path, vec![0x33; 64]);
+    }
+
+    #[test]
+    fn test_parse_contact_unknown_path_is_empty() {
+        let mut data = vec![0u8; CONTACT_LEN];
+        data[CONTACT_PATH_BYTE_OFFSET] = OUT_PATH_UNKNOWN;
+        data[CONTACT_OUT_PATH_OFFSET] = 0x0A;
+
+        let contact = parse_contact(&data).unwrap();
+        assert_eq!(contact.path_len, -1);
+        assert!(contact.out_path.is_empty());
+    }
+
+    #[test]
+    fn test_parse_contact_path_too_long_yields_empty() {
+        let mut data = vec![0u8; CONTACT_LEN];
+        // path_len: 63 hops of 3-byte hashes = 189 bytes, past the 64-byte field.
+        // PathByte::route_len() returns None for oversize paths, so out_path is empty.
+        data[CONTACT_PATH_BYTE_OFFSET] = 0xBF;
+
+        let contact = parse_contact(&data).unwrap();
+        assert!(contact.out_path.is_empty());
+    }
+
+    #[test]
+    fn test_decode_path_byte_max_hops_per_hash_size() {
+        // The most hops that fit in the 64-byte path decode...
+        assert_eq!(decode_path_byte(0b00_111111).unwrap(), (1, 63, 63));
+        assert_eq!(decode_path_byte(0b01_100000).unwrap(), (2, 32, 64));
+        assert_eq!(decode_path_byte(0b10_010101).unwrap(), (3, 21, 63));
+        // ...and one more hop errors
+        assert!(decode_path_byte(0b01_100001)
+            .unwrap_err()
+            .to_string()
+            .contains("Path has 33 hops of 2-byte hashes, max is 32"));
+        assert!(decode_path_byte(0b10_010110)
+            .unwrap_err()
+            .to_string()
+            .contains("Path has 22 hops of 3-byte hashes, max is 21"));
+    }
+
+    #[test]
+    fn test_parse_contact_four_byte_hashes_yields_empty() {
+        let mut data = vec![0u8; CONTACT_LEN];
+        // path_len: 1 hop of 4-byte hashes (bits 6-7 = 0b11), reserved by firmware.
+        // PathByte::route_len() returns None for the reserved hash size, so out_path is empty.
+        data[CONTACT_PATH_BYTE_OFFSET] = 0b11_000001;
+
+        let contact = parse_contact(&data).unwrap();
+        assert!(contact.out_path.is_empty());
     }
 
     #[test]
     fn test_parse_contact_too_short() {
-        let data = vec![0u8; 100];
+        let data = vec![0u8; CONTACT_LEN - 1];
         assert!(parse_contact(&data).is_err());
     }
 
