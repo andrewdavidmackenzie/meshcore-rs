@@ -1548,6 +1548,7 @@ impl CommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PathByte;
     use std::assert_matches;
     use tokio::time::timeout;
 
@@ -3205,7 +3206,7 @@ mod tests {
 
             let msg = ContactMessage {
                 sender_prefix: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
-                path_len: 2,
+                path_byte: PathByte(2),
                 txt_type: 1,
                 sender_timestamp: 1234567890,
                 text: "Hello!".to_string(),

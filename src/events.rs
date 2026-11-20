@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::packets::{PayloadType, RouteType};
+use crate::parsing::PathByte;
 use crate::{Error, PublicKey, CHANNEL_SECRET_LEN, PUBLIC_KEY_LEN};
 
 /// Event types emitted by MeshCore
@@ -341,8 +342,8 @@ impl BatteryInfo {
 pub struct ContactMessage {
     /// Sender public key prefix (6 bytes)
     pub sender_prefix: [u8; 6],
-    /// Path length
-    pub path_len: u8,
+    /// The packet's path byte; `PathByte::UNKNOWN` when it arrived direct
+    pub path_byte: PathByte,
     /// Text type (0 = plain, 2 = signed)
     pub txt_type: u8,
     /// Sender timestamp
@@ -377,8 +378,8 @@ impl ContactMessage {
 pub struct ChannelMessage {
     /// Channel index
     pub channel_idx: u8,
-    /// Path length
-    pub path_len: u8,
+    /// The packet's path byte; `PathByte::UNKNOWN` when it arrived direct
+    pub path_byte: PathByte,
     /// Text type (0 = plain)
     pub txt_type: u8,
     /// Sender timestamp
@@ -406,8 +407,8 @@ impl ChannelMessage {
 pub struct ChannelData {
     /// Channel index
     pub channel_idx: u8,
-    /// Flood path length, or 0xFF for a direct packet
-    pub path_len: u8,
+    /// The packet's path byte; `PathByte::UNKNOWN` for a direct packet
+    pub path_byte: PathByte,
     /// Application identifier (`docs/number_allocations.md` in the firmware repo)
     pub data_type: u16,
     /// The datagram
@@ -1536,7 +1537,7 @@ mod tests {
     fn test_contact_message_clone() {
         let msg = ContactMessage {
             sender_prefix: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
-            path_len: 2,
+            path_byte: PathByte(2),
             txt_type: 1,
             sender_timestamp: 1234567890,
             text: "Hello".to_string(),
@@ -1553,7 +1554,7 @@ mod tests {
     fn test_contact_message_message_id() {
         let msg = ContactMessage {
             sender_prefix: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
-            path_len: 2,
+            path_byte: PathByte(2),
             txt_type: 1,
             sender_timestamp: 0x12345678,
             text: "Hello".to_string(),
@@ -1571,7 +1572,7 @@ mod tests {
     fn test_contact_message_sender_prefix_hex() {
         let msg = ContactMessage {
             sender_prefix: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
-            path_len: 0,
+            path_byte: PathByte(0),
             txt_type: 0,
             sender_timestamp: 0,
             text: "".to_string(),
@@ -1586,7 +1587,7 @@ mod tests {
     fn test_channel_message_clone() {
         let msg = ChannelMessage {
             channel_idx: 5,
-            path_len: 1,
+            path_byte: PathByte(1),
             txt_type: 0,
             sender_timestamp: 1234567890,
             text: "Channel msg".to_string(),
@@ -1602,7 +1603,7 @@ mod tests {
     fn test_channel_message_message_id() {
         let msg = ChannelMessage {
             channel_idx: 5,
-            path_len: 1,
+            path_byte: PathByte(1),
             txt_type: 0,
             sender_timestamp: 0x12345678,
             text: "".to_string(),
