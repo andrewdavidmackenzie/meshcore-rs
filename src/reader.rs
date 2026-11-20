@@ -599,6 +599,13 @@ impl MessageReader {
                 self.dispatcher.emit(event).await;
             }
 
+            PacketType::AdvertPath => {
+                let path = parse_advert_path(payload)?;
+                let event =
+                    MeshCoreEvent::new(EventType::AdvertPath, EventPayload::AdvertPath(path));
+                self.dispatcher.emit(event).await;
+            }
+
             PacketType::PathDiscoveryResponse => {
                 let resp = parse_path_discovery_response(payload)?;
                 let prefix_hex = hex_encode(&resp.pubkey_prefix);
@@ -2785,6 +2792,43 @@ mod tests {
 
         // Too short for PathDiscoveryResponse
         let data = vec![PacketType::PathDiscoveryResponse as u8, 0x00, 0x01];
+        assert!(reader.handle_rx(data).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_advert_path() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        let mut data = vec![PacketType::AdvertPath as u8];
+        data.extend_from_slice(&1_700_000_000u32.to_le_bytes()); // recv_timestamp
+        data.push(0b01_000001); // hash_len=2, path_len=1
+        data.extend_from_slice(&[0x32, 0x63]); // one two-byte hop
+
+        reader.handle_rx(data).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::AdvertPath);
+        match event.payload {
+            EventPayload::AdvertPath(path) => {
+                assert_eq!(path.recv_timestamp, 1_700_000_000);
+                assert_eq!((path.path_len, path.path_hash_len), (1, 2));
+                assert_eq!(path.path, vec![0x32, 0x63]);
+            }
+            _ => panic!("Expected AdvertPath payload"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_advert_path_too_short() {
+        let (reader, _dispatcher) = create_reader();
+
+        // Too short for AdvertPath
+        let data = vec![PacketType::AdvertPath as u8, 0x00, 0x01];
         assert!(reader.handle_rx(data).await.is_err());
     }
 }

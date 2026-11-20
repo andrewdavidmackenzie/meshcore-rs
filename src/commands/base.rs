@@ -62,6 +62,7 @@ const CMD_SIGN_FINISH: u8 = 35;
 const CMD_SET_OTHER_PARAMS: u8 = 38;
 const CMD_GET_CUSTOM_VARS: u8 = 40;
 const CMD_SET_CUSTOM_VAR: u8 = 41;
+const CMD_GET_ADVERT_PATH: u8 = 42;
 const CMD_SEND_BINARY_REQ: u8 = 50;
 const CMD_FACTORY_RESET: u8 = 51;
 const CMD_PATH_DISCOVERY: u8 = 52;
@@ -75,6 +76,8 @@ const CMD_SEND_CHANNEL_DATA: u8 = 62;
 
 /// `path_len` value asking the firmware to flood rather than follow a path (`OUT_PATH_UNKNOWN`).
 const PATH_LEN_FLOOD: u8 = 0xFF;
+/// The byte after `CMD_GET_ADVERT_PATH`, reserved by the firmware
+const ADVERT_PATH_RESERVED: u8 = 0;
 /// A telemetry mode is a two-bit field of the byte `set_other_params` packs
 const TELEMETRY_MODE_MAX: u8 = 0b11;
 
@@ -952,6 +955,29 @@ impl CommandHandler {
             return Err(Error::protocol("Contact does not match requested key"));
         }
         Ok(contact)
+    }
+
+    /// Get the path a contact's last advert arrived by, from the radio's recent-advert table
+    ///
+    /// Format: [CMD_GET_ADVERT_PATH=0x2A][reserved: u8][pubkey: 32]
+    pub async fn get_advert_path(&self, public_key: &PublicKey) -> Result<AdvertPathData> {
+        let mut data = vec![CMD_GET_ADVERT_PATH, ADVERT_PATH_RESERVED];
+        data.extend_from_slice(public_key);
+        let event = self
+            .send_multi(
+                &data,
+                &[EventType::AdvertPath, EventType::Error],
+                self.default_timeout,
+            )
+            .await?;
+
+        if event.event_type == EventType::Error {
+            return device_error(event.payload);
+        }
+        let EventPayload::AdvertPath(path) = event.payload else {
+            return Err(Error::protocol("Unexpected response to get advert path"));
+        };
+        Ok(path)
     }
 
     /// Add or update a contact
@@ -2228,6 +2254,49 @@ mod tests {
         let (handler, rx, dispatcher) = create_test_handler();
         let _frames = answer(rx, dispatcher, next_contact_event());
         let r = handler.get_contact_by_key(&[8; PUBLIC_KEY_LEN]).await;
+        assert_matches!(r, Err(Error::Protocol(_)));
+    }
+
+    fn advert_path_event() -> MeshCoreEvent {
+        let path = AdvertPathData {
+            recv_timestamp: 1_700_000_000,
+            path_len: 2,
+            path_hash_len: 1,
+            path: vec![0x33, 0xAB],
+        };
+        MeshCoreEvent::new(EventType::AdvertPath, EventPayload::AdvertPath(path))
+    }
+
+    #[tokio::test]
+    async fn get_advert_path() {
+        let (handler, rx, dispatcher) = create_test_handler();
+        let frames = answer(rx, dispatcher, advert_path_event());
+
+        let got = handler.get_advert_path(&KEY).await.unwrap();
+        drop(handler);
+
+        assert_eq!(got.recv_timestamp, 1_700_000_000);
+        assert_eq!((got.path_len, got.path_hash_len), (2, 1));
+        assert_eq!(got.path, [0x33, 0xAB]);
+        let mut want = vec![CMD_GET_ADVERT_PATH, ADVERT_PATH_RESERVED];
+        want.extend_from_slice(&KEY);
+        assert_eq!(frames.await.unwrap(), vec![want]);
+    }
+
+    #[tokio::test]
+    async fn get_advert_path_not_found() {
+        let (handler, rx, dispatcher) = create_test_handler();
+        let _frames = answer(rx, dispatcher, MeshCoreEvent::error("\u{2}"));
+        let r = handler.get_advert_path(&KEY).await;
+        assert_matches!(r, Err(Error::Device(m)) if m == "\u{2}");
+    }
+
+    #[tokio::test]
+    async fn get_advert_path_bad_payload() {
+        let (handler, rx, dispatcher) = create_test_handler();
+        let event = MeshCoreEvent::new(EventType::AdvertPath, EventPayload::None);
+        let _frames = answer(rx, dispatcher, event);
+        let r = handler.get_advert_path(&KEY).await;
         assert_matches!(r, Err(Error::Protocol(_)));
     }
 
