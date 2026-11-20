@@ -26,6 +26,7 @@ pub enum EventType {
     Contacts,
     NewContact,
     NextContact,
+    AdvertPath,
 
     // Device info events
     SelfInfo,
@@ -97,6 +98,8 @@ pub enum EventPayload {
     Contacts(Vec<Contact>),
     /// Single contact
     Contact(Contact),
+    /// The path a contact's last advert arrived by
+    AdvertPath(AdvertPathData),
     /// Self-info
     SelfInfo(SelfInfo),
     /// Device info
@@ -618,6 +621,19 @@ pub struct PathDiscoveryResponseData {
     pub in_path_hash_len: u8,
     /// Inbound path hashes
     pub in_path: Vec<u8>,
+}
+
+/// The path a contact's last advert arrived by, from the radio's recent-advert table
+#[derive(Debug, Clone)]
+pub struct AdvertPathData {
+    /// When the radio heard the advert, by its clock
+    pub recv_timestamp: u32,
+    /// Path length (number of hops)
+    pub path_len: u8,
+    /// Path hash size (bytes per hop hash, 1-4)
+    pub path_hash_len: u8,
+    /// Path hashes, in wire order
+    pub path: Vec<u8>,
 }
 
 /// Advertisement response data

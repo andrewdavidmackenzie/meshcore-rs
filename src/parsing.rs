@@ -5,11 +5,11 @@ use std::ops::Range;
 
 use crate::error::Error;
 use crate::events::{
-    AclEntry, AdvertResponseData, AdvertisementData, BatteryInfo, ChannelData, ChannelInfoData,
-    ChannelMessage, Contact, ContactMessage, CoreStatsData, DeviceInfoData, DiscoverEntry,
-    LoginSuccessData, MeshPacketHeader, MmaEntry, MsgSentInfo, Neighbour, NeighboursData,
-    PacketStatsData, PathDiscoveryResponseData, PathUpdateData, RadioStatsData, RawAdvertisement,
-    SelfInfo, StatsCategory, StatsData, StatusData, TraceHop, TraceInfo,
+    AclEntry, AdvertPathData, AdvertResponseData, AdvertisementData, BatteryInfo, ChannelData,
+    ChannelInfoData, ChannelMessage, Contact, ContactMessage, CoreStatsData, DeviceInfoData,
+    DiscoverEntry, LoginSuccessData, MeshPacketHeader, MmaEntry, MsgSentInfo, Neighbour,
+    NeighboursData, PacketStatsData, PathDiscoveryResponseData, PathUpdateData, RadioStatsData,
+    RawAdvertisement, SelfInfo, StatsCategory, StatsData, StatusData, TraceHop, TraceInfo,
 };
 use crate::packets::{PayloadType, RouteType};
 use crate::{
@@ -1672,6 +1672,46 @@ pub fn parse_path_discovery_response(payload: &[u8]) -> Result<PathDiscoveryResp
         in_path_len,
         in_path_hash_len,
         in_path,
+    })
+}
+
+/// Offset of the receive timestamp in a `PacketType::AdvertPath` payload.
+const ADVERT_PATH_TIMESTAMP_OFFSET: usize = 0;
+/// Offset of the path descriptor byte.
+const ADVERT_PATH_BYTE_OFFSET: usize = 4;
+/// Offset of the first path data byte (immediately after the descriptor).
+const ADVERT_PATH_DATA_OFFSET: usize = ADVERT_PATH_BYTE_OFFSET + 1;
+/// Minimum payload length: timestamp + path descriptor byte.
+const ADVERT_PATH_MIN_LEN: usize = ADVERT_PATH_DATA_OFFSET;
+
+/// Parse an [`AdvertPathData`] from a `PacketType::AdvertPath` payload.
+///
+/// Returns an error if the payload is too short, the path byte is invalid, or the path is truncated.
+pub fn parse_advert_path(payload: &[u8]) -> Result<AdvertPathData> {
+    if payload.len() < ADVERT_PATH_MIN_LEN {
+        return Err(Error::protocol("AdvertPath payload too short"));
+    }
+    let recv_timestamp = read_u32_le(payload, ADVERT_PATH_TIMESTAMP_OFFSET)?;
+    let path_byte = PathByte(
+        *payload
+            .get(ADVERT_PATH_BYTE_OFFSET)
+            .ok_or_else(|| Error::protocol("AdvertPath missing path byte"))?,
+    );
+    let path_bytes = path_byte
+        .route_len()
+        .ok_or_else(|| Error::protocol("AdvertPath path byte invalid"))?;
+    let path_end = ADVERT_PATH_DATA_OFFSET
+        .checked_add(path_bytes)
+        .ok_or_else(|| Error::protocol("AdvertPath path overflow"))?;
+    let path = payload
+        .get(ADVERT_PATH_DATA_OFFSET..path_end)
+        .ok_or_else(|| Error::protocol("AdvertPath path truncated"))?
+        .to_vec();
+    Ok(AdvertPathData {
+        recv_timestamp,
+        path_len: path_byte.hops(),
+        path_hash_len: path_byte.hash_size(),
+        path,
     })
 }
 
@@ -3417,6 +3457,45 @@ mod tests {
         data.extend_from_slice(&[0x01, 0x02]); // only 2 bytes, need 5
 
         assert!(parse_path_discovery_response(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_advert_path_too_short() {
+        assert!(parse_advert_path(&[]).is_err());
+        assert!(parse_advert_path(&[0; 4]).is_err()); // need at least 5
+    }
+
+    #[test]
+    fn test_parse_advert_path_direct() {
+        let mut data = 1_700_000_000u32.to_le_bytes().to_vec();
+        data.push(0x00); // hash_len=1, path_len=0
+        let path = parse_advert_path(&data).unwrap();
+        assert_eq!(path.recv_timestamp, 1_700_000_000);
+        assert_eq!((path.path_len, path.path_hash_len), (0, 1));
+        assert!(path.path.is_empty());
+    }
+
+    #[test]
+    fn test_parse_advert_path_two_byte_hops() {
+        let mut data = 1_700_000_000u32.to_le_bytes().to_vec();
+        data.push(0b01_000010); // hash_len=2, path_len=2
+        data.extend_from_slice(&[0x32, 0x63, 0x26, 0x62]);
+        let path = parse_advert_path(&data).unwrap();
+        assert_eq!((path.path_len, path.path_hash_len), (2, 2));
+        assert_eq!(path.path, vec![0x32, 0x63, 0x26, 0x62]);
+    }
+
+    #[test]
+    fn test_parse_advert_path_truncated_or_reserved() {
+        let mut data = 1_700_000_000u32.to_le_bytes().to_vec();
+        data.push(0b00_000010); // two one-byte hops announced
+        data.push(0x33); // one present
+        assert!(parse_advert_path(&data).is_err());
+
+        let mut data = 1_700_000_000u32.to_le_bytes().to_vec();
+        data.push(0b11_000001); // hash size 4 is reserved
+        data.push(0x00);
+        assert!(parse_advert_path(&data).is_err());
     }
 
     #[test]
