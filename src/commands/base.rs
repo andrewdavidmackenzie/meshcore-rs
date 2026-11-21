@@ -299,18 +299,20 @@ impl CommandHandler {
     /// Send raw data and wait for `Ok` or `Error`, turning `Error` into
     /// `Error::Device`
     async fn send_checked(&self, data: &[u8]) -> Result<MeshCoreEvent> {
+        self.send_expecting(data, EventType::Ok).await
+    }
+
+    /// Send raw data and wait for `expected` or `Error`, turning `Error` into
+    /// `Error::Device`
+    async fn send_expecting(&self, data: &[u8], expected: EventType) -> Result<MeshCoreEvent> {
         let event = self
-            .send_multi(
-                data,
-                &[EventType::Ok, EventType::Error],
-                self.default_timeout,
-            )
+            .send_multi(data, &[expected, EventType::Error], self.default_timeout)
             .await?;
 
-        if event.event_type == EventType::Ok {
-            return Ok(event);
+        if event.event_type == EventType::Error {
+            return device_error(event.payload);
         }
-        device_error(event.payload)
+        Ok(event)
     }
 
     /// Wait for a specific event
@@ -617,10 +619,12 @@ impl CommandHandler {
 
     /// Get channel info
     ///
+    /// An index past the radio's channels is `Err(Error::Device(_))`.
+    ///
     /// Format: [CMD_GET_CHANNEL=0x1F][channel_idx: u8]
     pub async fn get_channel(&self, channel_idx: u8) -> Result<ChannelInfoData> {
         let data = [CMD_GET_CHANNEL, channel_idx];
-        let event = self.send(&data, Some(EventType::ChannelInfo)).await?;
+        let event = self.send_expecting(&data, EventType::ChannelInfo).await?;
 
         match event.payload {
             EventPayload::ChannelInfo(info) => Ok(info),
@@ -1045,6 +1049,8 @@ impl CommandHandler {
 
     /// Export contact as URI
     ///
+    /// A contact the radio does not hold is `Err(Error::Device(_))`.
+    ///
     /// Format: [CMD_EXPORT_CONTACT=0x11][pubkey: 32 optional]
     pub async fn export_contact(&self, key: Option<impl Into<Destination>>) -> Result<String> {
         let data = if let Some(k) = key {
@@ -1059,7 +1065,7 @@ impl CommandHandler {
             vec![CMD_EXPORT_CONTACT]
         };
 
-        let event = self.send(&data, Some(EventType::ContactUri)).await?;
+        let event = self.send_expecting(&data, EventType::ContactUri).await?;
 
         match event.payload {
             EventPayload::String(uri) => Ok(uri),
@@ -1220,6 +1226,8 @@ impl CommandHandler {
 
     /// Send login request
     ///
+    /// A contact the radio does not hold is `Err(Error::Device(_))`.
+    ///
     /// Format: [CMD_SEND_LOGIN=0x1A][pubkey: 32][password]
     pub async fn send_login(
         &self,
@@ -1235,7 +1243,7 @@ impl CommandHandler {
         data.extend_from_slice(&pubkey);
         data.extend_from_slice(password.as_bytes());
 
-        let event = self.send(&data, Some(EventType::MsgSent)).await?;
+        let event = self.send_expecting(&data, EventType::MsgSent).await?;
 
         match event.payload {
             EventPayload::MsgSent(info) => Ok(info),
@@ -1263,6 +1271,8 @@ impl CommandHandler {
 
     /// Send a binary request to a contact
     ///
+    /// A contact the radio does not hold is `Err(Error::Device(_))`.
+    ///
     /// Format: [CMD_SEND_BINARY_REQ=0x32][pubkey: 32][req_type]
     /// (Firmware and canonical meshcore_py use pubkey-then-type; see
     /// meshcore_py commands/base.py:244.)
@@ -1280,7 +1290,7 @@ impl CommandHandler {
         data.extend_from_slice(&pubkey);
         data.push(req_type as u8);
 
-        let event = self.send(&data, Some(EventType::MsgSent)).await?;
+        let event = self.send_expecting(&data, EventType::MsgSent).await?;
 
         match event.payload {
             EventPayload::MsgSent(info) => {
@@ -1447,7 +1457,7 @@ impl CommandHandler {
         data.push(pubkey_prefix_length);
         data.extend_from_slice(&nonce.to_le_bytes());
 
-        let event = self.send(&data, Some(EventType::MsgSent)).await?;
+        let event = self.send_expecting(&data, EventType::MsgSent).await?;
         let sent = match event.payload {
             EventPayload::MsgSent(info) => info,
             _ => return Err(Error::protocol("Unexpected response to neighbours request")),
@@ -1770,6 +1780,16 @@ mod tests {
         let reader = Arc::new(MessageReader::new(dispatcher.clone()));
         let handler = CommandHandler::new(sender, dispatcher.clone(), reader);
         (handler, receiver, dispatcher)
+    }
+
+    /// A handler whose radio answers the next command with `ERR_CODE_NOT_FOUND`
+    fn create_refusing_handler() -> CommandHandler {
+        let (handler, mut rx, dispatcher) = create_test_handler();
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+            dispatcher.emit(MeshCoreEvent::error("code 2")).await;
+        });
+        handler
     }
 
     #[tokio::test]
@@ -2814,6 +2834,44 @@ mod tests {
         let result = handler.get_channel(0).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().name, "General");
+    }
+
+    #[tokio::test]
+    async fn test_get_channel_returns_the_error_frame() {
+        let result = create_refusing_handler().get_channel(40).await;
+        assert_matches!(result, Err(Error::Device(msg)) if msg == "code 2");
+    }
+
+    #[tokio::test]
+    async fn test_export_contact_returns_the_error_frame() {
+        let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
+        let result = create_refusing_handler().export_contact(Some(dest)).await;
+        assert_matches!(result, Err(Error::Device(msg)) if msg == "code 2");
+    }
+
+    #[tokio::test]
+    async fn test_send_login_returns_the_error_frame() {
+        let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
+        let result = create_refusing_handler().send_login(dest, "secret").await;
+        assert_matches!(result, Err(Error::Device(msg)) if msg == "code 2");
+    }
+
+    #[tokio::test]
+    async fn test_send_binary_req_returns_the_error_frame() {
+        let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
+        let result = create_refusing_handler()
+            .send_binary_req(dest, BinaryReqType::Status)
+            .await;
+        assert_matches!(result, Err(Error::Device(msg)) if msg == "code 2");
+    }
+
+    #[tokio::test]
+    async fn test_request_neighbours_returns_the_error_frame() {
+        let dest = vec![0xAAu8; PUBLIC_KEY_LEN];
+        let result = create_refusing_handler()
+            .request_neighbours(dest, 8, 0)
+            .await;
+        assert_matches!(result, Err(Error::Device(msg)) if msg == "code 2");
     }
 
     #[tokio::test]
