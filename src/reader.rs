@@ -566,14 +566,17 @@ impl MessageReader {
                 self.dispatcher.emit(event).await;
             }
 
-            PacketType::AdvertResponse => {
-                let resp = parse_advert_response(payload)?;
-                let tag_hex = hex_encode(&resp.tag);
+            PacketType::ContactDeleted => {
+                let public_key = read_bytes(payload, 0)?;
                 let event = MeshCoreEvent::new(
-                    EventType::AdvertResponse,
-                    EventPayload::AdvertResponse(resp),
-                )
-                .with_attribute("tag", tag_hex);
+                    EventType::ContactDeleted,
+                    EventPayload::ContactDeleted { public_key },
+                );
+                self.dispatcher.emit(event).await;
+            }
+
+            PacketType::ContactsFull => {
+                let event = MeshCoreEvent::new(EventType::ContactsFull, EventPayload::None);
                 self.dispatcher.emit(event).await;
             }
 
@@ -2310,23 +2313,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_rx_advert_response() {
+    async fn test_handle_rx_contact_deleted() {
         let (reader, dispatcher) = create_reader();
         let mut receiver = dispatcher.receiver();
 
-        let mut data = vec![PacketType::AdvertResponse as u8];
-        // tag (4) + pubkey (32) + adv_type (1) + node_name (32) + timestamp (4) + flags (1) = 74 bytes min
-        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // tag
+        let mut data = vec![PacketType::ContactDeleted as u8];
         data.extend_from_slice(&[0xAA; PUBLIC_KEY_LEN]);
-        data.push(1); // adv_type
-        let mut name = [0u8; 32];
-        name[..5].copy_from_slice(b"Node1");
-        data.extend_from_slice(&name); // node_name (32 bytes)
-        data.extend_from_slice(&1234567890u32.to_le_bytes()); // timestamp
-        data.push(0x01); // flags
-                         // lat/lon
-        data.extend_from_slice(&37774900i32.to_le_bytes());
-        data.extend_from_slice(&(-122419400i32).to_le_bytes());
 
         reader.handle_rx(data).await.unwrap();
 
@@ -2335,16 +2327,42 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(event.event_type, EventType::AdvertResponse);
+        assert_eq!(event.event_type, EventType::ContactDeleted);
         match event.payload {
-            EventPayload::AdvertResponse(resp) => {
-                assert_eq!(resp.tag, [0x01, 0x02, 0x03, 0x04]);
-                assert_eq!(resp.adv_type, 1);
-                assert_eq!(resp.node_name, "Node1");
-                assert_eq!(resp.lat, Some(37774900));
+            EventPayload::ContactDeleted { public_key } => {
+                assert_eq!(public_key, [0xAA; PUBLIC_KEY_LEN]);
             }
-            _ => panic!("Expected AdvertResponse payload"),
+            _ => panic!("Expected ContactDeleted payload"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_contact_deleted_too_short() {
+        let (reader, _dispatcher) = create_reader();
+
+        let mut data = vec![PacketType::ContactDeleted as u8];
+        data.extend_from_slice(&[0xAA; 6]);
+
+        assert!(reader.handle_rx(data).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handle_rx_contacts_full() {
+        let (reader, dispatcher) = create_reader();
+        let mut receiver = dispatcher.receiver();
+
+        reader
+            .handle_rx(vec![PacketType::ContactsFull as u8])
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.event_type, EventType::ContactsFull);
+        assert!(matches!(event.payload, EventPayload::None));
     }
 
     #[tokio::test]

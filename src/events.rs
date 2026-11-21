@@ -28,6 +28,8 @@ pub enum EventType {
     NewContact,
     NextContact,
     AdvertPath,
+    ContactDeleted,
+    ContactsFull,
 
     // Device info events
     SelfInfo,
@@ -80,7 +82,6 @@ pub enum EventType {
     // Control
     ControlData,
     DiscoverResponse,
-    AdvertResponse,
 
     // Unknown
     Unknown,
@@ -101,6 +102,8 @@ pub enum EventPayload {
     Contact(Contact),
     /// The path a contact's last advert arrived by
     AdvertPath(AdvertPathData),
+    /// A contact the radio removed to make room for a new one
+    ContactDeleted { public_key: PublicKey },
     /// Self-info
     SelfInfo(SelfInfo),
     /// Device info
@@ -155,8 +158,6 @@ pub enum EventPayload {
     DiscoverResponse(Vec<DiscoverEntry>),
     /// Path discovery response
     PathDiscoveryResponse(PathDiscoveryResponseData),
-    /// Advert response
-    AdvertResponse(AdvertResponseData),
     /// Stats data
     Stats(StatsData),
     /// AutoAdd config
@@ -635,29 +636,6 @@ pub struct AdvertPathData {
     pub path_hash_len: u8,
     /// Path hashes, in wire order
     pub path: Vec<u8>,
-}
-
-/// Advertisement response data
-#[derive(Debug, Clone)]
-pub struct AdvertResponseData {
-    /// Tag
-    pub tag: [u8; 4],
-    /// Public key
-    pub pubkey: PublicKey,
-    /// Advertisement type
-    pub adv_type: u8,
-    /// Node name
-    pub node_name: String,
-    /// Timestamp
-    pub timestamp: u32,
-    /// Flags
-    pub flags: u8,
-    /// Latitude (optional)
-    pub lat: Option<i32>,
-    /// Longitude (optional)
-    pub lon: Option<i32>,
-    /// Node description (optional)
-    pub node_desc: Option<String>,
 }
 
 /// Stats data
