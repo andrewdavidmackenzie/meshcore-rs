@@ -1,7 +1,8 @@
 use crate::events::EventPayload;
 use crate::{Error, EventType, MeshCore, MeshCoreEvent};
 use btleplug::api::{
-    Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
+    Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, PeripheralProperties,
+    ScanFilter, WriteType,
 };
 use btleplug::platform::{Manager, Peripheral};
 use futures::stream::StreamExt;
@@ -160,6 +161,9 @@ impl MeshCore {
     /// Given a peripheral's name or mac address (as a &str formatted thus
     /// "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}" using BDAddr.to_string()),
     /// return the [Peripheral] struct
+    ///
+    /// The adapter's known peripherals are checked before a scan starts, since
+    /// one the host has already seen may not be reported as discovered again.
     async fn find_peripheral(target_name_or_mac: &str) -> crate::Result<Peripheral> {
         let manager = Manager::new()
             .await
@@ -174,6 +178,13 @@ impl MeshCore {
             .into_iter()
             .next()
             .ok_or_else(|| Error::connection("No BLE adapters found"))?;
+
+        for peripheral in adapter.peripherals().await.unwrap_or_default() {
+            let props = peripheral.properties().await.ok().flatten();
+            if is_target(props, target_name_or_mac) {
+                return Ok(peripheral);
+            }
+        }
 
         // Subscribe to adapter events
         let mut events = adapter
@@ -193,16 +204,9 @@ impl MeshCore {
                 while let Some(event) = events.next().await {
                     if let CentralEvent::DeviceDiscovered(id) = event {
                         if let Ok(peripheral) = adapter.peripheral(&id).await {
-                            if let Ok(Some(props)) = peripheral.properties().await {
-                                // return this peripheral if the name matches
-                                if props.local_name.as_deref() == Some(target_name_or_mac) {
-                                    return Some(peripheral);
-                                }
-
-                                // return this peripheral if the MAC address matches
-                                if props.address.to_string() == target_name_or_mac {
-                                    return Some(peripheral);
-                                }
+                            let props = peripheral.properties().await.ok().flatten();
+                            if is_target(props, target_name_or_mac) {
+                                return Some(peripheral);
                             }
                         }
                     }
@@ -309,5 +313,32 @@ impl MeshCore {
         meshcore.setup_event_handlers().await;
 
         Ok(meshcore)
+    }
+}
+
+/// Whether a peripheral's local name or MAC address is `target_name_or_mac`
+fn is_target(props: Option<PeripheralProperties>, target_name_or_mac: &str) -> bool {
+    props.is_some_and(|props| {
+        props.local_name.as_deref() == Some(target_name_or_mac)
+            || props.address.to_string() == target_name_or_mac
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use btleplug::api::BDAddr;
+
+    #[test]
+    fn test_is_target_matches_the_name_or_the_mac() {
+        let props = PeripheralProperties {
+            address: BDAddr::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
+            local_name: Some("MeshCore-Node".to_string()),
+            ..Default::default()
+        };
+        assert!(is_target(Some(props.clone()), "MeshCore-Node"));
+        assert!(is_target(Some(props.clone()), "AA:BB:CC:DD:EE:FF"));
+        assert!(!is_target(Some(props), "MeshCore-Other"));
+        assert!(!is_target(None, "MeshCore-Node"));
     }
 }
