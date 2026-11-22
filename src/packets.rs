@@ -150,6 +150,11 @@ impl From<u8> for BinaryReqType {
     }
 }
 
+/// A sync point that stops a room server pushing posts to the client that
+/// sends it: the server pushes only posts with a timestamp greater than the
+/// client's sync point, and no post's timestamp can be greater than this
+pub const STOP_PUSHES: u32 = u32::MAX;
+
 /// Anonymous request types (for remote queries)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
