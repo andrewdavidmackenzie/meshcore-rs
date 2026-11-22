@@ -39,7 +39,7 @@ pub enum PacketType {
     SetFloodScope = 54,
     SendControlData = 55,
 
-    // Push notifications (0x80-0x8F)
+    // Push notifications (0x80-0x90)
     Advertisement = 0x80,
     PathUpdate = 0x81,
     Ack = 0x82,
@@ -55,7 +55,8 @@ pub enum PacketType {
     BinaryResponse = 0x8C,
     PathDiscoveryResponse = 0x8D,
     ControlData = 0x8E,
-    AdvertResponse = 0x8F,
+    ContactDeleted = 0x8F,
+    ContactsFull = 0x90,
 
     /// Unknown packet type
     Unknown = 0xFF,
@@ -110,7 +111,8 @@ impl From<u8> for PacketType {
             0x8C => PacketType::BinaryResponse,
             0x8D => PacketType::PathDiscoveryResponse,
             0x8E => PacketType::ControlData,
-            0x8F => PacketType::AdvertResponse,
+            0x8F => PacketType::ContactDeleted,
+            0x90 => PacketType::ContactsFull,
             _ => PacketType::Unknown,
         }
     }
@@ -353,7 +355,8 @@ mod tests {
         assert_eq!(PacketType::from(0x8C), PacketType::BinaryResponse);
         assert_eq!(PacketType::from(0x8D), PacketType::PathDiscoveryResponse);
         assert_eq!(PacketType::from(0x8E), PacketType::ControlData);
-        assert_eq!(PacketType::from(0x8F), PacketType::AdvertResponse);
+        assert_eq!(PacketType::from(0x8F), PacketType::ContactDeleted);
+        assert_eq!(PacketType::from(0x90), PacketType::ContactsFull);
     }
 
     #[test]
