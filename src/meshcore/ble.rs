@@ -1,10 +1,12 @@
 use crate::events::EventPayload;
 use crate::{Error, EventType, MeshCore, MeshCoreEvent};
 use btleplug::api::{
-    Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
+    Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, PeripheralProperties,
+    ScanFilter, WriteType,
 };
 use btleplug::platform::{Manager, Peripheral};
 use futures::stream::StreamExt;
+use std::future::Future;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
@@ -160,6 +162,9 @@ impl MeshCore {
     /// Given a peripheral's name or mac address (as a &str formatted thus
     /// "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}" using BDAddr.to_string()),
     /// return the [Peripheral] struct
+    ///
+    /// The adapter's known peripherals are checked before a scan starts, since
+    /// one the host has already seen may not be reported as discovered again.
     async fn find_peripheral(target_name_or_mac: &str) -> crate::Result<Peripheral> {
         let manager = Manager::new()
             .await
@@ -174,6 +179,11 @@ impl MeshCore {
             .into_iter()
             .next()
             .ok_or_else(|| Error::connection("No BLE adapters found"))?;
+
+        let known = adapter.peripherals().await.unwrap_or_default();
+        if let Some(peripheral) = first_matching(known, target_name_or_mac).await {
+            return Ok(peripheral);
+        }
 
         // Subscribe to adapter events
         let mut events = adapter
@@ -193,16 +203,9 @@ impl MeshCore {
                 while let Some(event) = events.next().await {
                     if let CentralEvent::DeviceDiscovered(id) = event {
                         if let Ok(peripheral) = adapter.peripheral(&id).await {
-                            if let Ok(Some(props)) = peripheral.properties().await {
-                                // return this peripheral if the name matches
-                                if props.local_name.as_deref() == Some(target_name_or_mac) {
-                                    return Some(peripheral);
-                                }
-
-                                // return this peripheral if the MAC address matches
-                                if props.address.to_string() == target_name_or_mac {
-                                    return Some(peripheral);
-                                }
+                            let props = peripheral.properties().await.ok().flatten();
+                            if is_target(props, target_name_or_mac) {
+                                return Some(peripheral);
                             }
                         }
                     }
@@ -309,5 +312,143 @@ impl MeshCore {
         meshcore.setup_event_handlers().await;
 
         Ok(meshcore)
+    }
+}
+
+/// A peripheral whose advertised properties can be read
+///
+/// The slice of btleplug's [Peripheral] that the lookup below needs, so that
+/// lookup can be tested without a Bluetooth adapter.
+trait AdvertisesProperties {
+    // `impl Future` rather than `async fn`: the `+ Send` bound keeps the
+    // futures of the public connect path `Send`, which a plain `async fn` in
+    // a trait cannot promise.
+    #[allow(clippy::manual_async_fn)]
+    fn advertised_properties(&self) -> impl Future<Output = Option<PeripheralProperties>> + Send;
+}
+
+impl AdvertisesProperties for Peripheral {
+    #[allow(clippy::manual_async_fn)]
+    fn advertised_properties(&self) -> impl Future<Output = Option<PeripheralProperties>> + Send {
+        async { self.properties().await.ok().flatten() }
+    }
+}
+
+/// The first peripheral in `peripherals` whose advertised name or MAC address
+/// is `target_name_or_mac`, in the order given — the adapter's known
+/// peripherals first, so one the host has already seen is returned without a
+/// scan
+async fn first_matching<P: AdvertisesProperties>(
+    peripherals: Vec<P>,
+    target_name_or_mac: &str,
+) -> Option<P> {
+    for peripheral in peripherals {
+        if is_target(peripheral.advertised_properties().await, target_name_or_mac) {
+            return Some(peripheral);
+        }
+    }
+    None
+}
+
+/// Whether a peripheral's local name or MAC address is `target_name_or_mac`
+fn is_target(props: Option<PeripheralProperties>, target_name_or_mac: &str) -> bool {
+    props.is_some_and(|props| {
+        props.local_name.as_deref() == Some(target_name_or_mac)
+            || props.address.to_string() == target_name_or_mac
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use btleplug::api::BDAddr;
+
+    #[test]
+    fn test_is_target_matches_the_name_or_the_mac() {
+        let props = PeripheralProperties {
+            address: BDAddr::from([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
+            local_name: Some("MeshCore-Node".to_string()),
+            ..Default::default()
+        };
+        assert!(is_target(Some(props.clone()), "MeshCore-Node"));
+        assert!(is_target(Some(props.clone()), "AA:BB:CC:DD:EE:FF"));
+        assert!(!is_target(Some(props), "MeshCore-Other"));
+        assert!(!is_target(None, "MeshCore-Node"));
+    }
+
+    /// A peripheral that advertises fixed properties, standing in for a real
+    /// one in [`first_matching`] tests
+    #[derive(Clone, Debug)]
+    struct FakePeripheral {
+        /// Told apart by this in assertions on which one matched
+        n: usize,
+        props: Option<PeripheralProperties>,
+    }
+
+    impl AdvertisesProperties for FakePeripheral {
+        #[allow(clippy::manual_async_fn)]
+        fn advertised_properties(
+            &self,
+        ) -> impl Future<Output = Option<PeripheralProperties>> + Send {
+            async { self.props.clone() }
+        }
+    }
+
+    /// A peripheral numbered `n` advertising the given name and MAC address
+    fn fake(n: usize, name: Option<&str>, address: [u8; 6]) -> FakePeripheral {
+        FakePeripheral {
+            n,
+            props: Some(PeripheralProperties {
+                address: BDAddr::from(address),
+                local_name: name.map(str::to_string),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn first_matching_returns_the_first_name_match() {
+        let other = fake(1, Some("MeshCore-Other"), [1, 1, 1, 1, 1, 1]);
+        let target = fake(2, Some("MeshCore-Node"), [2, 2, 2, 2, 2, 2]);
+        let later_target = fake(3, Some("MeshCore-Node"), [3, 3, 3, 3, 3, 3]);
+
+        let matched = first_matching(vec![other, target, later_target], "MeshCore-Node").await;
+
+        assert_eq!(matched.unwrap().n, 2);
+    }
+
+    #[tokio::test]
+    async fn first_matching_returns_a_mac_match() {
+        let target = fake(
+            1,
+            Some("MeshCore-Node"),
+            [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        );
+
+        let matched = first_matching(vec![target], "AA:BB:CC:DD:EE:FF").await;
+
+        assert_eq!(matched.unwrap().n, 1);
+    }
+
+    #[tokio::test]
+    async fn first_matching_skips_a_peripheral_without_properties() {
+        let no_props = FakePeripheral { n: 1, props: None };
+        let target = fake(2, Some("MeshCore-Node"), [3, 3, 3, 3, 3, 3]);
+
+        let matched = first_matching(vec![no_props, target], "MeshCore-Node").await;
+
+        assert_eq!(matched.unwrap().n, 2);
+    }
+
+    #[tokio::test]
+    async fn first_matching_returns_none_when_nothing_matches() {
+        let other = fake(1, Some("MeshCore-Other"), [1, 1, 1, 1, 1, 1]);
+
+        assert!(first_matching(vec![other], "MeshCore-Node").await.is_none());
+        assert!(
+            first_matching(Vec::<FakePeripheral>::new(), "MeshCore-Node")
+                .await
+                .is_none()
+        );
     }
 }
