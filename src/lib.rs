@@ -119,7 +119,9 @@ pub use events::{
     MeshCoreEvent, MsgSentInfo, Subscription,
 };
 pub use meshcore::MeshCore;
-pub use packets::{AnonReqType, BinaryReqType, ControlType, PacketType, PayloadType, RouteType};
+pub use packets::{
+    AnonReqType, BinaryReqType, ControlType, PacketType, PayloadType, RouteType, STOP_PUSHES,
+};
 pub use parsing::PathByte;
 
 /// Result type alias using the library's Error type
